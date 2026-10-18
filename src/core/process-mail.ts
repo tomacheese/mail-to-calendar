@@ -6,7 +6,14 @@ import {
   type Mail,
 } from '../integrations/graph'
 import { Foundry, FoundryError } from '../integrations/foundry'
-import { State, sha, type BookingRow } from '../integrations/state'
+import {
+  State,
+  failedAttempts,
+  isSettled,
+  sha,
+  type BookingRow,
+} from '../integrations/state'
+import { classifyFailure, describeError } from './failure'
 import { validateBooking, type Analysis, type ValidBooking } from './validation'
 
 /** One calendar operation decided (and possibly applied) for a booking. */
@@ -25,6 +32,8 @@ export interface Summary {
   processed: number
   ops: Op[]
   failures: number
+  /** 1 when mail was left for the next run because the Foundry call budget was used up. */
+  deferred: number
   foundryCalls: number
 }
 
@@ -88,7 +97,10 @@ export function renderEvent(b: ValidBooking, tentative: boolean) {
   }
 }
 
-/** Existing managed booking for this reservation, or undefined. Number match wins; otherwise provider+start. */
+/**
+ * Looks up the managed booking for a reservation: by number when present, otherwise by provider and start.
+ * Returns the stored row (if any), the key to use for a new row, and `ambiguous` when several rows share the number.
+ */
 async function findExisting(
   state: State,
   b: ValidBooking
@@ -115,7 +127,6 @@ async function handleBooking(
   b: ValidBooking
 ): Promise<Op> {
   const mode = cfg.CALENDAR_WRITE_MODE
-  const tentative = action === 'tentative'
   const found = await findExisting(state, b)
   if (found.ambiguous)
     return {
@@ -125,6 +136,8 @@ async function handleBooking(
       applied: false,
     }
   const { row, key } = found
+  const tentative =
+    action === 'tentative' || (action === 'update' && !!row?.tentative)
   const base = { subject: b.subject, start: b.start, end: b.end }
 
   if (!row && (action === 'update' || action === 'cancel'))
@@ -143,6 +156,13 @@ async function handleBooking(
     }
 
   const cancel = action === 'cancel'
+  if (cancel && row?.status === 'cancelled')
+    return {
+      op: 'skip',
+      ...base,
+      note: 'already cancelled',
+      applied: false,
+    }
   if (!cancel && row?.status === 'cancelled')
     return {
       op: 'hold',
@@ -229,7 +249,7 @@ async function handleBooking(
   return { op, ...base, applied: true }
 }
 
-/** Pure decision on what one analysis means; returns ops. */
+/** Applies one analysis according to CALENDAR_WRITE_MODE and returns the operations performed or planned. */
 export async function processMail(
   cfg: Config,
   graph: Graph,
@@ -248,7 +268,15 @@ export async function processMail(
       },
     ]
   const ops: Op[] = []
-  for (const b of analysis.bookings) {
+  for (const original of analysis.bookings) {
+    // A whitespace-only number would normalise to '' and match every number-less booking.
+    const b = {
+      ...original,
+      reservation_number:
+        original.reservation_number && norm(original.reservation_number)
+          ? original.reservation_number
+          : null,
+    }
     // A cancellation often omits the date: a reservation number that really appears in the mail is enough to match it.
     const numberOnly =
       analysis.action === 'cancel' &&
@@ -261,7 +289,9 @@ export async function processMail(
           b,
           mail.receivedAt,
           mail.bodyText,
-          cfg.DEFAULT_EVENT_DURATION_MINUTES
+          cfg.DEFAULT_EVENT_DURATION_MINUTES,
+          // Deleting an event does not use the model-written text, so a long field must not block a cancel.
+          analysis.action !== 'cancel'
         )
     if (!v.ok) {
       ops.push({
@@ -277,7 +307,28 @@ export async function processMail(
   return ops
 }
 
-/** Walks the Inbox delta, analyses new mail and applies the resulting operations. */
+/** Fetches a mail, or undefined when it no longer exists (404/410). */
+async function fetchMail(graph: Graph, id: string): Promise<Mail | undefined> {
+  try {
+    return await graph.getMail(id)
+  } catch (error) {
+    if (error instanceof GraphError && [404, 410].includes(error.status)) {
+      return undefined
+    }
+    throw error
+  }
+}
+
+/** A mail that keeps failing for its own reasons is parked after this many attempts. */
+const MAX_ATTEMPTS = 3
+
+/** After this many mails parked in a row the cause is assumed to be systemic (for example a model change), so parking stops. */
+const MAX_EXHAUSTED_STREAK = 2
+
+/**
+ * Walks the Inbox delta, analyses new mail and applies the resulting operations.
+ * Mail is handled oldest first and processing stops at the first failure that is not parked, so a cancel cannot overtake the booking it refers to.
+ */
 export async function runScan(
   cfg: Config,
   log: (m: string) => void = console.log
@@ -291,14 +342,27 @@ export async function runScan(
   )
 
   const sync = await state.getSync()
-  const { messages, deltaLink } = await graph.inboxDelta(sync?.deltaLink)
-  const initializedAt = sync?.initializedAt ?? new Date().toISOString()
+  // Taken before the walk so mail arriving during it is never older than the baseline.
+  const startedAt = new Date().toISOString()
+  let page
+  try {
+    page = await graph.inboxDelta(sync?.deltaLink)
+  } catch (error) {
+    if (!sync || !(error instanceof GraphError) || error.status !== 410) {
+      throw error
+    }
+    log('delta token expired (410); walking the Inbox again from scratch')
+    page = await graph.inboxDelta()
+  }
+  const { messages, deltaLink } = page
+  const initializedAt = sync?.initializedAt ?? startedAt
   const s: Summary = {
     baseline: !sync,
     seen: messages.length,
     processed: 0,
     ops: [],
     failures: 0,
+    deferred: 0,
     foundryCalls: 0,
   }
 
@@ -308,7 +372,7 @@ export async function runScan(
   }
 
   const dryRun = cfg.CALENDAR_WRITE_MODE === 'dry-run'
-  // Delta order is not chronological; a cancel must never be handled before the booking it refers to.
+  let streak = await state.getExhaustedStreak()
   messages.sort((a, b) =>
     (a.receivedDateTime ?? '').localeCompare(b.receivedDateTime ?? '')
   )
@@ -321,9 +385,24 @@ export async function runScan(
       m.receivedDateTime < initializedAt
     )
       continue
-    if (await state.isProcessed(m.id, dryRun)) continue
+    const prior = await state.getProcessedResult(m.id)
+    if (isSettled(prior, dryRun)) continue
+    // Hitting the call budget is throttling, not a failure: the rest waits for the next run.
+    if (foundry.exhausted) {
+      s.deferred++
+      break
+    }
+    const receivedAt = new Date(m.receivedDateTime ?? Date.now())
+    const label = sha(m.id).slice(0, 8)
+    const prefix = dryRun ? 'dry-run:' : ''
     try {
-      const mail = await graph.getMail(m.id)
+      const mail = await fetchMail(graph, m.id)
+      if (!mail) {
+        // Moved or deleted since the delta reported it: nothing left to process.
+        await state.markProcessed(m.id, `${prefix}error:gone`, receivedAt)
+        log(`message ${label} is gone`)
+        continue
+      }
       const analysis = await foundry.analyze(mail)
       const ops = await processMail(cfg, graph, state, mail, analysis)
       s.ops.push(...ops)
@@ -345,24 +424,49 @@ export async function runScan(
         )
       else await state.markProcessed(m.id, analysis.action, mail.receivedAt)
       s.processed++
+      if (streak > 0) {
+        streak = 0
+        await state.setExhaustedStreak(0)
+      }
     } catch (error) {
       if (error instanceof FoundryError && error.permanent) {
-        // Retrying cannot help (e.g. content filter); park it so the cursor can advance.
+        // Content filter and similar: retrying cannot help, so park it and let the cursor advance.
         await state.markProcessed(
           m.id,
-          `${dryRun ? 'dry-run:' : ''}error:${error.status}`,
-          new Date(m.receivedDateTime ?? Date.now())
+          `${prefix}error:${error.status}`,
+          receivedAt
         )
-        log(`message parked: ${error.message}`)
+        log(`message ${label} parked: ${error.message}`)
         continue
       }
       s.failures++
-      log(`message failed: ${(error as Error).message}`)
+      log(`message ${label} failed: ${describeError(error)}`)
+      if (classifyFailure(error) === 'per-mail') {
+        const attempts = failedAttempts(prior) + 1
+        if (attempts >= MAX_ATTEMPTS && streak < MAX_EXHAUSTED_STREAK) {
+          await state.markProcessed(
+            m.id,
+            `${prefix}error:exhausted`,
+            receivedAt
+          )
+          streak++
+          await state.setExhaustedStreak(streak)
+          log(`message ${label} parked after ${attempts} attempts`)
+          continue
+        }
+        if (attempts >= MAX_ATTEMPTS) {
+          log(
+            `${streak} mails in a row were parked; treating this as systemic and holding the rest`
+          )
+        }
+        await state.markProcessed(m.id, `retry:${attempts}`, receivedAt)
+      }
+      break
     }
   }
   s.foundryCalls = foundry.calls
   // Advance the cursor only when every message is settled; dry-run never advances it.
-  if (s.failures === 0 && cfg.CALENDAR_WRITE_MODE !== 'dry-run')
+  if (!dryRun && s.failures === 0 && s.deferred === 0)
     await state.setSync(deltaLink, initializedAt)
   return s
 }

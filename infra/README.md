@@ -1,8 +1,6 @@
 # infra
 
-Bicep template deploying `mail-to-calendar` as an Azure Functions v4 app
-(Node.js 24 LTS, Flex Consumption / FC1, no Always Ready instances), into an
-**existing** resource group:
+Bicep template deploying `mail-to-calendar` as an Azure Functions v4 app (Node.js 24 LTS, Flex Consumption / FC1, no Always Ready instances), into an **existing** resource group:
 
 - Log Analytics Workspace (daily ingestion cap 0.1 GB)
 - Application Insights (workspace-based)
@@ -44,12 +42,7 @@ Application code is deployed separately via
 (push to `main`/`master`, or manual `workflow_dispatch`) — this template only
 provisions the infrastructure.
 
-**If deploying manually** (`func azure functionapp publish` / `az functionapp
-deploy`), install prod dependencies with
-`pnpm install --prod --frozen-lockfile --config.node-linker=hoisted` first.
-pnpm's default symlinked `node_modules` does not survive Kudu's zip
-extraction — transitive deps resolve fine locally but come back "Cannot find
-module" once deployed.
+**If deploying manually** (`func azure functionapp publish` / `az functionapp deploy`), install prod dependencies with `pnpm install --prod --frozen-lockfile --config.node-linker=hoisted` first. pnpm's default symlinked `node_modules` does not survive Kudu's zip extraction — transitive deps resolve fine locally but come back "Cannot find module" once deployed.
 
 ## Required GitHub Secrets
 
@@ -62,3 +55,5 @@ module" once deployed.
 
 These are expected to be configured in the `production` environment of the
 GitHub repository (see `environment: production` in the workflow).
+
+The Bicep parameter `foundryMaxCallsPerRun` is deliberately lower than the application default (see the README table).

@@ -44,6 +44,14 @@ const ABS_DATE =
   /\d{1,2}月\d{1,2}日|\d{4}[/.-]\d{1,2}[/.-]\d{1,2}|\d{1,2}\/\d{1,2}/
 const norm = (s: string) => s.normalize('NFKC').replaceAll(/\s+/g, '')
 
+/** Upper bounds for model-written text that ends up in the calendar; Graph rejects over-long subjects. */
+const FIELD_LIMITS = [
+  ['subject', 200],
+  ['provider', 200],
+  ['location', 500],
+  ['details', 4000],
+] as const
+
 /** Parse a local datetime as if it were UTC (wall-clock arithmetic only). */
 function wall(s: string): number | null {
   const m = LOCAL_DT.exec(s)
@@ -75,8 +83,14 @@ export function validateBooking(
   b: Booking,
   receivedAt: Date,
   bodyText: string,
-  defaultMinutes: number
+  defaultMinutes: number,
+  enforceLimits = true
 ): { ok: true; value: ValidBooking } | { ok: false; reason: string } {
+  for (const [field, max] of FIELD_LIMITS) {
+    if (enforceLimits && (b[field]?.length ?? 0) > max) {
+      return { ok: false, reason: `${field} is longer than ${max} characters` }
+    }
+  }
   if (!b.start_at) return { ok: false, reason: 'start_at missing' }
   const s = wall(b.start_at)
   if (s === null)

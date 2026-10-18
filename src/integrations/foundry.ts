@@ -16,20 +16,35 @@ Rules:
 - target_reservation_hint: for update/cancel, what identifies the original booking (number, old date).
 - reason: one short sentence.`
 
+/** Header values must not be able to start a new prompt section. */
+const oneLine = (text: string) => text.replaceAll(/[\r\n]+/g, ' ')
+
+/** Breaks any email_body tag (any case, any spacing) so mail text cannot close or reopen the fence. */
+const neutraliseFence = (text: string) =>
+  text.replaceAll(/<\s*(\/?)\s*email_body\s*>/gi, '< $1email_body>')
+
+/** Foundry returned 2xx but the content is empty, not JSON or does not match the schema. */
+export class FoundryOutputError extends Error {}
+
 /** Foundry HTTP failure. The response body is deliberately not kept because it may echo the prompt. */
 export class FoundryError extends Error {
   constructor(public status: number) {
     super(`Foundry ${status}`)
   }
-  /** 4xx other than 429 (e.g. content filter) will fail identically on retry. */
+  /** Statuses that depend on the mail itself (content filter, oversized or unprocessable input). */
   get permanent() {
-    return this.status >= 400 && this.status < 500 && this.status !== 429
+    return [400, 413, 422].includes(this.status)
   }
 }
 
 /** Client for the existing Foundry deployment (API key auth, structured outputs). */
 export class Foundry {
   calls = 0
+
+  /** True once this run has used its Foundry call budget. */
+  get exhausted(): boolean {
+    return this.calls >= this.cfg.FOUNDRY_MAX_CALLS_PER_RUN
+  }
   constructor(private cfg: Config) {}
 
   /** Classifies one mail and extracts bookings; the result is re-validated with the app schema. */
@@ -39,14 +54,13 @@ export class Foundry {
     receivedAt: Date
     bodyText: string
   }): Promise<Analysis> {
-    if (this.calls >= this.cfg.FOUNDRY_MAX_CALLS_PER_RUN)
-      throw new Error('FOUNDRY_MAX_CALLS_PER_RUN reached')
+    if (this.exhausted) throw new Error('FOUNDRY_MAX_CALLS_PER_RUN reached')
     this.calls++
     const schema = z.toJSONSchema(AnalysisSchema, {
       target: 'draft-7',
     }) as Record<string, unknown>
     delete schema.$schema
-    const user = `Received at: ${mail.receivedAt.toISOString()} (assume Asia/Tokyo for the recipient)\nFrom: ${mail.from}\nSubject: ${mail.subject}\n\n<email_body>\n${mail.bodyText}\n</email_body>`
+    const user = `Received at: ${mail.receivedAt.toISOString()} (assume Asia/Tokyo for the recipient)\nFrom: ${oneLine(mail.from)}\nSubject: ${oneLine(mail.subject)}\n\n<email_body>\n${neutraliseFence(mail.bodyText)}\n</email_body>`
     const res = await this.post({
       model: this.cfg.FOUNDRY_DEPLOYMENT,
       messages: [
@@ -60,8 +74,15 @@ export class Foundry {
       max_completion_tokens: 4000,
     })
     const content = res.choices?.[0]?.message?.content
-    if (!content) throw new Error('Foundry returned no content')
-    return AnalysisSchema.parse(JSON.parse(content)) // app-side re-validation
+    if (!content) throw new FoundryOutputError('Foundry returned no content')
+    try {
+      return AnalysisSchema.parse(JSON.parse(content))
+    } catch {
+      // Not rethrown as-is: JSON/Zod messages embed fragments of the model output, which is derived from the mail.
+      throw new FoundryOutputError(
+        'Foundry returned output that does not match the schema'
+      )
+    }
   }
 
   /** POSTs to chat completions, retrying 429/5xx with backoff. */

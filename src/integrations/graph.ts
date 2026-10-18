@@ -45,6 +45,11 @@ export class GraphError extends Error {
   }
 }
 
+/** Only the AADSTS code of an Entra error description: the rest can echo request values. */
+function aadstsCode(description = ''): string {
+  return /AADSTS\d+/.exec(description)?.[0] ?? ''
+}
+
 /** Microsoft Graph client using client-credentials auth against one mailbox. */
 export class Graph {
   private tok?: { v: string; exp: number }
@@ -68,15 +73,15 @@ export class Graph {
         }),
       }
     )
-    const j = (await res.json()) as {
+    const j = (await res.json().catch(() => ({}))) as {
       access_token?: string
       expires_in?: number
       error?: string
       error_description?: string
     }
-    if (!j.access_token)
+    if (!res.ok || !j.access_token)
       throw new Error(
-        `Graph token failed: ${j.error} ${j.error_description?.split('\r\n', 1)[0]}`
+        `Graph token failed: ${res.status} ${j.error ?? ''} ${aadstsCode(j.error_description)}`.trim()
       )
     this.tok = {
       v: j.access_token,
@@ -85,7 +90,7 @@ export class Graph {
     return j.access_token
   }
 
-  /** Graph call with 429/5xx retry (honours Retry-After). `url` may be relative to the mailbox or absolute. */
+  /** Graph call retrying 429/502/503/504 (honours Retry-After). `url` may be relative to the mailbox or absolute. */
   async req<T>(
     method: string,
     url: string,

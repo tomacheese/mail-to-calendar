@@ -22,18 +22,18 @@ pnpm install
 
 ローカルは `.env`（Git 管理外）、Functions では `local.settings.json` の `Values` / アプリ設定に設定する。雛形は [`.env.example`](./.env.example)。
 
-| 変数名                                                        | 必須 | 説明                                                       |
-| ------------------------------------------------------------- | ---- | ---------------------------------------------------------- |
-| `GRAPH_TENANT_ID` / `GRAPH_CLIENT_ID` / `GRAPH_CLIENT_SECRET` | ✅   | Graph アプリ登録（Client ID は GUID、Secret は値）         |
-| `GRAPH_MAILBOX`                                               | ✅   | 対象メールボックスの UPN                                   |
-| `FOUNDRY_ENDPOINT` / `FOUNDRY_DEPLOYMENT` / `FOUNDRY_API_KEY` | ✅   | 既存 Foundry の接続情報                                    |
-| `STATE_STORAGE_CONNECTION`                                    | ✅   | 状態保存先（ローカルは Azurite、本番はアプリのストレージ） |
-| `CALENDAR_WRITE_MODE`                                         | -    | `dry-run`（既定）/ `create-only` / `full`                  |
-| `MAIL_POLLING_ENABLED`                                        | -    | Timer による自動監視（既定 `false`）                       |
-| `PROCESS_EXISTING_MESSAGES`                                   | -    | 初回に既存メールを処理するか（既定 `false`）               |
-| `DEFAULT_EVENT_DURATION_MINUTES`                              | -    | 終了時刻が不明な場合の所要時間（既定 60）                  |
-| `FOUNDRY_MAX_CALLS_PER_RUN`                                   | -    | 1 回の実行での推論呼び出し上限（既定 50）                  |
-| `STATE_TABLE_PREFIX`                                          | -    | テーブル名の接頭辞（同一ストレージ内の分離用）             |
+| 変数名                                                        | 必須 | 説明                                                                 |
+| ------------------------------------------------------------- | ---- | -------------------------------------------------------------------- |
+| `GRAPH_TENANT_ID` / `GRAPH_CLIENT_ID` / `GRAPH_CLIENT_SECRET` | ✅   | Graph アプリ登録（Client ID は GUID、Secret は値）                   |
+| `GRAPH_MAILBOX`                                               | ✅   | 対象メールボックスの UPN                                             |
+| `FOUNDRY_ENDPOINT` / `FOUNDRY_DEPLOYMENT` / `FOUNDRY_API_KEY` | ✅   | 既存 Foundry の接続情報                                              |
+| `STATE_STORAGE_CONNECTION`                                    | ✅   | 状態保存先（ローカルは Azurite、本番はアプリのストレージ）           |
+| `CALENDAR_WRITE_MODE`                                         | -    | `dry-run`（既定）/ `create-only` / `full`                            |
+| `MAIL_POLLING_ENABLED`                                        | -    | Timer による自動監視（既定 `false`）                                 |
+| `PROCESS_EXISTING_MESSAGES`                                   | -    | 初回に既存メールを処理するか（既定 `false`）                         |
+| `DEFAULT_EVENT_DURATION_MINUTES`                              | -    | 終了時刻が不明な場合の所要時間（既定 60）                            |
+| `FOUNDRY_MAX_CALLS_PER_RUN`                                   | -    | 1 回の実行での推論呼び出し上限（アプリ既定 50、Bicep の本番既定 20） |
+| `STATE_TABLE_PREFIX`                                          | -    | テーブル名の接頭辞（同一ストレージ内の分離用）                       |
 
 ### 開発コマンド
 
