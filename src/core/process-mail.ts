@@ -307,8 +307,23 @@ export async function processMail(
   return ops
 }
 
+/** Fetches a mail, or undefined when it no longer exists (404/410). */
+async function fetchMail(graph: Graph, id: string): Promise<Mail | undefined> {
+  try {
+    return await graph.getMail(id)
+  } catch (error) {
+    if (error instanceof GraphError && [404, 410].includes(error.status)) {
+      return undefined
+    }
+    throw error
+  }
+}
+
 /** A mail that keeps failing for its own reasons is parked after this many attempts. */
 const MAX_ATTEMPTS = 3
+
+/** After this many mails parked in a row the cause is assumed to be systemic (for example a model change), so parking stops. */
+const MAX_EXHAUSTED_STREAK = 2
 
 /**
  * Walks the Inbox delta, analyses new mail and applies the resulting operations.
@@ -357,6 +372,7 @@ export async function runScan(
   }
 
   const dryRun = cfg.CALENDAR_WRITE_MODE === 'dry-run'
+  let streak = await state.getExhaustedStreak()
   messages.sort((a, b) =>
     (a.receivedDateTime ?? '').localeCompare(b.receivedDateTime ?? '')
   )
@@ -378,8 +394,15 @@ export async function runScan(
     }
     const receivedAt = new Date(m.receivedDateTime ?? Date.now())
     const label = sha(m.id).slice(0, 8)
+    const prefix = dryRun ? 'dry-run:' : ''
     try {
-      const mail = await graph.getMail(m.id)
+      const mail = await fetchMail(graph, m.id)
+      if (!mail) {
+        // Moved or deleted since the delta reported it: nothing left to process.
+        await state.markProcessed(m.id, `${prefix}error:gone`, receivedAt)
+        log(`message ${label} is gone`)
+        continue
+      }
       const analysis = await foundry.analyze(mail)
       const ops = await processMail(cfg, graph, state, mail, analysis)
       s.ops.push(...ops)
@@ -401,8 +424,11 @@ export async function runScan(
         )
       else await state.markProcessed(m.id, analysis.action, mail.receivedAt)
       s.processed++
+      if (streak > 0) {
+        streak = 0
+        await state.setExhaustedStreak(0)
+      }
     } catch (error) {
-      const prefix = dryRun ? 'dry-run:' : ''
       if (error instanceof FoundryError && error.permanent) {
         // Content filter and similar: retrying cannot help, so park it and let the cursor advance.
         await state.markProcessed(
@@ -417,14 +443,21 @@ export async function runScan(
       log(`message ${label} failed: ${describeError(error)}`)
       if (classifyFailure(error) === 'per-mail') {
         const attempts = failedAttempts(prior) + 1
-        if (attempts >= MAX_ATTEMPTS) {
+        if (attempts >= MAX_ATTEMPTS && streak < MAX_EXHAUSTED_STREAK) {
           await state.markProcessed(
             m.id,
             `${prefix}error:exhausted`,
             receivedAt
           )
+          streak++
+          await state.setExhaustedStreak(streak)
           log(`message ${label} parked after ${attempts} attempts`)
           continue
+        }
+        if (attempts >= MAX_ATTEMPTS) {
+          log(
+            `${streak} mails in a row were parked; treating this as systemic and holding the rest`
+          )
         }
         await state.markProcessed(m.id, `retry:${attempts}`, receivedAt)
       }

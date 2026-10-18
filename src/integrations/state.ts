@@ -60,6 +60,23 @@ export class State {
       'inbox'
     )
   }
+  /** Number of mails parked as exhausted in a row; reset by any mail that succeeds. */
+  async getExhaustedStreak(): Promise<number> {
+    const row = await this.get<{ count: number }>(
+      this.t.SyncState,
+      'sync',
+      'exhausted'
+    )
+    return row?.count ?? 0
+  }
+  /** Saves the exhausted-in-a-row counter. */
+  setExhaustedStreak(count: number) {
+    return this.t.SyncState.upsertEntity({
+      partitionKey: 'sync',
+      rowKey: 'exhausted',
+      count,
+    })
+  }
   /** Saves the delta cursor. */
   setSync(deltaLink: string, initializedAt: string) {
     return this.t.SyncState.upsertEntity({

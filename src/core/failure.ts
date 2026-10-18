@@ -1,5 +1,4 @@
 import { FoundryError, FoundryOutputError } from '../integrations/foundry'
-import { GraphError } from '../integrations/graph'
 
 /**
  * per-mail: tied to this one mail, so it is retried a few times and then parked (permanent Foundry rejections are parked at once).
@@ -7,20 +6,13 @@ import { GraphError } from '../integrations/graph'
  */
 export type FailureKind = 'per-mail' | 'systemic'
 
-const GRAPH_SYSTEMIC_4XX = new Set([401, 403, 408, 429])
-
 /** Decides whether a failure belongs to one mail or to the whole system. */
 export function classifyFailure(error: unknown): FailureKind {
   if (error instanceof FoundryOutputError) return 'per-mail'
   if (error instanceof FoundryError) {
     return error.permanent ? 'per-mail' : 'systemic'
   }
-  if (error instanceof GraphError) {
-    const clientError = error.status >= 400 && error.status < 500
-    return clientError && !GRAPH_SYSTEMIC_4XX.has(error.status)
-      ? 'per-mail'
-      : 'systemic'
-  }
+  // Graph failures depend on the call, not on the mail, so they hold the cursor and alert. A mail that is gone (404/410) is handled in runScan.
   return 'systemic'
 }
 

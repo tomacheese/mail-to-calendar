@@ -4,6 +4,7 @@ import { loadConfig } from '../src/config'
 import { runScan } from '../src/core/process-mail'
 import { Graph } from '../src/integrations/graph'
 import { Foundry } from '../src/integrations/foundry'
+import { State } from '../src/integrations/state'
 
 const env = () => ({
   GRAPH_TENANT_ID: randomUUID(),
@@ -107,6 +108,8 @@ function scenario() {
     foundryFail: false,
     foundryStatus: 200,
     badOutput: false,
+    mailStatus: 200,
+    eventStatus: 201,
     gone: false,
     creates: 0,
     lastEvent: {} as Record<string, any>,
@@ -177,6 +180,8 @@ function scenario() {
       })
     }
     if (url.includes('/events') && init?.method === 'POST') {
+      if (s.eventStatus !== 201)
+        return json({ error: { code: 'ErrorInvalidRequest' } }, s.eventStatus)
       s.creates++
       s.lastEvent = JSON.parse(init.body as string)
       return json(
@@ -189,6 +194,8 @@ function scenario() {
       )
     }
     if (url.includes('/messages/')) {
+      if (s.mailStatus !== 200)
+        return json({ error: { code: 'ErrorItemNotFound' } }, s.mailStatus)
       const d = new Date(Date.now() + 5 * 86400e3)
       return json({
         subject: '予約',
@@ -283,17 +290,21 @@ describe('失敗の扱い', () => {
   it('認証エラー(401)は保留にせず、設定が直れば同じメールを処理する', async () => {
     const s = scenario()
     const cfg = fullConfig()
+    const cursor = async () => (await new State(cfg).getSync())?.deltaLink
     await runScan(cfg, quiet)
+    const before = await cursor()
     s.delta = [mailRef('m1')]
     s.foundryStatus = 401
     const failed = await runScan(cfg, quiet)
     expect(failed).toMatchObject({ failures: 1, processed: 0 })
+    expect(await cursor()).toBe(before)
 
     s.foundryStatus = 200
     s.delta = [mailRef('m1')]
     const recovered = await runScan(cfg, quiet)
     expect(recovered).toMatchObject({ failures: 0, processed: 1 })
     expect(s.creates).toBe(1)
+    expect(await cursor()).not.toBe(before)
   })
 
   it('失敗したメールより後のメールは、同じ実行では処理しない', async () => {
@@ -315,16 +326,20 @@ describe('失敗の扱い', () => {
     const s = scenario()
     const cfg = fullConfig()
     const logs: string[] = []
+    const cursor = async () => (await new State(cfg).getSync())?.deltaLink
     await runScan(cfg, quiet)
+    const before = await cursor()
     s.badOutput = true
     for (let attempt = 1; attempt <= 3; attempt++) {
       s.delta = [mailRef('poison')]
       const run = await runScan(cfg, (m) => logs.push(m))
       expect(run).toMatchObject({ failures: 1, processed: 0 })
+      expect(await cursor()).toBe(before)
     }
     s.delta = [mailRef('poison')]
     const parked = await runScan(cfg, quiet)
     expect(parked).toMatchObject({ failures: 0, processed: 0 })
+    expect(await cursor()).not.toBe(before)
     expect(logs.join('\n')).not.toContain('LEAK')
   })
 
@@ -399,5 +414,55 @@ describe('プロンプトの組み立て', () => {
     await expect(new Graph(loadConfig(env())).inboxCount()).rejects.toThrow(
       /^Graph token failed: 401 invalid_client AADSTS7000222$/
     )
+  })
+})
+
+describe('Graph の失敗と連続保留', () => {
+  it('カレンダー書き込みの 4xx はメール固有とせず、保留しないで失敗として扱う', async () => {
+    const s = scenario()
+    const cfg = fullConfig()
+    await runScan(cfg, quiet)
+    s.delta = [mailRef('m1')]
+    s.eventStatus = 400
+    const failed = await runScan(cfg, quiet)
+    expect(failed).toMatchObject({ failures: 1, processed: 0 })
+
+    s.eventStatus = 201
+    s.delta = [mailRef('m1')]
+    const recovered = await runScan(cfg, quiet)
+    expect(recovered).toMatchObject({ failures: 0, processed: 1 })
+    expect(s.creates).toBe(1)
+  })
+
+  it('取得できないメール(404)は処理済みにして、カーソルを進める', async () => {
+    const s = scenario()
+    const cfg = fullConfig()
+    const cursor = async () => (await new State(cfg).getSync())?.deltaLink
+    await runScan(cfg, quiet)
+    const before = await cursor()
+    s.mailStatus = 404
+    s.delta = [mailRef('gone')]
+    const run = await runScan(cfg, quiet)
+    expect(run).toMatchObject({ failures: 0, processed: 0 })
+    expect(await cursor()).not.toBe(before)
+  })
+
+  it('保留が連続したら、それ以降は保留せず失敗のまま止めて、直れば処理する', async () => {
+    const s = scenario()
+    const cfg = fullConfig()
+    await runScan(cfg, quiet)
+    s.badOutput = true
+    const runs = []
+    for (let n = 1; n <= 8; n++) {
+      s.delta = [mailRef('m1', 1000), mailRef('m2', 2000), mailRef('m3', 3000)]
+      runs.push(await runScan(cfg, quiet))
+    }
+    // m1 and m2 are parked; m3 is held because two mails in a row were already parked.
+    expect(runs.at(-1)).toMatchObject({ failures: 1, processed: 0 })
+
+    s.badOutput = false
+    s.delta = [mailRef('m1', 1000), mailRef('m2', 2000), mailRef('m3', 3000)]
+    const recovered = await runScan(cfg, quiet)
+    expect(recovered).toMatchObject({ failures: 0, processed: 1 })
   })
 })

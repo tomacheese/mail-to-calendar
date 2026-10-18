@@ -18,16 +18,12 @@ describe('classifyFailure', () => {
     expect(classifyFailure(new FoundryOutputError('x'))).toBe('per-mail')
   })
 
-  it.each([
-    [400, 'per-mail'],
-    [404, 'per-mail'],
-    [401, 'systemic'],
-    [403, 'systemic'],
-    [429, 'systemic'],
-    [503, 'systemic'],
-  ])('Graph %i は %s', (status, kind) => {
-    expect(classifyFailure(new GraphError(status, 'x'))).toBe(kind)
-  })
+  it.each([400, 401, 403, 404, 429, 503])(
+    'Graph %i はシステム全体の問題として扱う',
+    (status) => {
+      expect(classifyFailure(new GraphError(status, 'x'))).toBe('systemic')
+    }
+  )
 
   it('不明なエラーはシステム全体の問題として扱う', () => {
     expect(classifyFailure(new Error('boom'))).toBe('systemic')
