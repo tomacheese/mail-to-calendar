@@ -16,6 +16,13 @@ Rules:
 - target_reservation_hint: for update/cancel, what identifies the original booking (number, old date).
 - reason: one short sentence.`
 
+/** Header values must not be able to start a new prompt section. */
+const oneLine = (text: string) => text.replaceAll(/[\r\n]+/g, ' ')
+
+/** Breaks any email_body tag (any case, any spacing) so mail text cannot close or reopen the fence. */
+const neutraliseFence = (text: string) =>
+  text.replaceAll(/<\s*(\/?)\s*email_body\s*>/gi, '< $1email_body>')
+
 /** Foundry returned 2xx but the content is empty, not JSON or does not match the schema. */
 export class FoundryOutputError extends Error {}
 
@@ -53,7 +60,7 @@ export class Foundry {
       target: 'draft-7',
     }) as Record<string, unknown>
     delete schema.$schema
-    const user = `Received at: ${mail.receivedAt.toISOString()} (assume Asia/Tokyo for the recipient)\nFrom: ${mail.from}\nSubject: ${mail.subject}\n\n<email_body>\n${mail.bodyText.replaceAll('</email_body>', '</ email_body>')}\n</email_body>`
+    const user = `Received at: ${mail.receivedAt.toISOString()} (assume Asia/Tokyo for the recipient)\nFrom: ${oneLine(mail.from)}\nSubject: ${oneLine(mail.subject)}\n\n<email_body>\n${neutraliseFence(mail.bodyText)}\n</email_body>`
     const res = await this.post({
       model: this.cfg.FOUNDRY_DEPLOYMENT,
       messages: [

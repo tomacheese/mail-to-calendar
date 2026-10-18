@@ -32,7 +32,7 @@ export interface Summary {
   processed: number
   ops: Op[]
   failures: number
-  /** Mails left for the next run because the Foundry call budget was used up. */
+  /** 1 when mail was left for the next run because the Foundry call budget was used up. */
   deferred: number
   foundryCalls: number
 }
@@ -289,7 +289,9 @@ export async function processMail(
           b,
           mail.receivedAt,
           mail.bodyText,
-          cfg.DEFAULT_EVENT_DURATION_MINUTES
+          cfg.DEFAULT_EVENT_DURATION_MINUTES,
+          // Deleting an event does not use the model-written text, so a long field must not block a cancel.
+          analysis.action !== 'cancel'
         )
     if (!v.ok) {
       ops.push({
@@ -310,7 +312,7 @@ const MAX_ATTEMPTS = 3
 
 /**
  * Walks the Inbox delta, analyses new mail and applies the resulting operations.
- * Mail is handled oldest first and processing stops at the first failure, so a cancel can never overtake the booking it refers to.
+ * Mail is handled oldest first and processing stops at the first failure that is not parked, so a cancel cannot overtake the booking it refers to.
  */
 export async function runScan(
   cfg: Config,
@@ -426,12 +428,11 @@ export async function runScan(
         }
         await state.markProcessed(m.id, `retry:${attempts}`, receivedAt)
       }
-      // Later mail must wait, otherwise a cancel could be decided before its booking exists.
       break
     }
   }
   s.foundryCalls = foundry.calls
-  // Advance the cursor only when every message is settled; after the baseline, dry-run never advances it.
+  // Advance the cursor only when every message is settled; dry-run never advances it.
   if (!dryRun && s.failures === 0 && s.deferred === 0)
     await state.setSync(deltaLink, initializedAt)
   return s

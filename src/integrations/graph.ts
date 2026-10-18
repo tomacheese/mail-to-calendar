@@ -45,6 +45,11 @@ export class GraphError extends Error {
   }
 }
 
+/** Only the AADSTS code of an Entra error description: the rest can echo request values. */
+function aadstsCode(description = ''): string {
+  return /AADSTS\d+/.exec(description)?.[0] ?? ''
+}
+
 /** Microsoft Graph client using client-credentials auth against one mailbox. */
 export class Graph {
   private tok?: { v: string; exp: number }
@@ -72,10 +77,11 @@ export class Graph {
       access_token?: string
       expires_in?: number
       error?: string
+      error_description?: string
     }
     if (!res.ok || !j.access_token)
       throw new Error(
-        `Graph token failed: ${res.status} ${j.error ?? ''}`.trim()
+        `Graph token failed: ${res.status} ${j.error ?? ''} ${aadstsCode(j.error_description)}`.trim()
       )
     this.tok = {
       v: j.access_token,

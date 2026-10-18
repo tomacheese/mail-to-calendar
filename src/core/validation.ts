@@ -83,10 +83,11 @@ export function validateBooking(
   b: Booking,
   receivedAt: Date,
   bodyText: string,
-  defaultMinutes: number
+  defaultMinutes: number,
+  enforceLimits = true
 ): { ok: true; value: ValidBooking } | { ok: false; reason: string } {
   for (const [field, max] of FIELD_LIMITS) {
-    if ((b[field]?.length ?? 0) > max) {
+    if (enforceLimits && (b[field]?.length ?? 0) > max) {
       return { ok: false, reason: `${field} is longer than ${max} characters` }
     }
   }

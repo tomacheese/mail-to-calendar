@@ -2,7 +2,7 @@ import { FoundryError, FoundryOutputError } from '../integrations/foundry'
 import { GraphError } from '../integrations/graph'
 
 /**
- * per-mail: the same mail fails the same way on retry, so it is retried a few times and then parked.
+ * per-mail: tied to this one mail, so it is retried a few times and then parked (permanent Foundry rejections are parked at once).
  * systemic: configuration or outage, so it must never be parked and must hold the cursor and alert.
  */
 export type FailureKind = 'per-mail' | 'systemic'

@@ -7,7 +7,7 @@ app.timer('scanInbox', {
   handler: async (_t, ctx) => {
     const cfg = loadConfig()
     if (!cfg.MAIL_POLLING_ENABLED) return
-    // runScan logs counts, hashed message ids and error classes, never mail content or event details.
+    // runScan logs counts, hashed message ids and sanitised error messages, never mail content or event details.
     const s = await runScan(cfg, (m) => {
       ctx.log(m)
     })

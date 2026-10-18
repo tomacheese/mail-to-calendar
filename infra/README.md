@@ -56,4 +56,4 @@ provisions the infrastructure.
 These are expected to be configured in the `production` environment of the
 GitHub repository (see `environment: production` in the workflow).
 
-The Bicep parameter `foundryMaxCallsPerRun` defaults to 20 (a conservative production cap per 5-minute run); the application default of 50 only applies when the setting is absent.
+The Bicep parameter `foundryMaxCallsPerRun` is deliberately lower than the application default (see the README table).

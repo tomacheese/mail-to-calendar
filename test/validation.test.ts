@@ -101,4 +101,16 @@ describe('validateBooking', () => {
       validateBooking({ ...base, subject: long }, received, body, 60)
     ).toEqual({ ok: false, reason: 'subject is longer than 200 characters' })
   })
+
+  it('取消では長いテキストでも拒否しない', () => {
+    const long = 'あ'.repeat(201)
+    const result = validateBooking(
+      { ...base, subject: long },
+      received,
+      body,
+      60,
+      false
+    )
+    expect(result.ok).toBe(true)
+  })
 })
