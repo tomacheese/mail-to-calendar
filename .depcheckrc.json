@@ -1,0 +1,9 @@
+{
+  "ignores": [
+    "@types/node",
+    "run-z",
+    "@types/jest",
+    "azurite",
+    "azure-functions-core-tools"
+  ]
+}

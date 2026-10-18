@@ -1,0 +1,57 @@
+# Azure Functions へのビルドとデプロイ
+
+name: Deploy to Azure Functions
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: azure-deploy
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write # OIDC 認証に必要
+      contents: read
+
+    steps:
+      - name: 🛎 Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: 🏗 Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: 📦 Install dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: 🔨 Build
+        run: pnpm build
+
+      # pnpm の既定のシンボリックリンク node_modules は Kudu の zip 展開で失われ、
+      # デプロイ後に推移的依存が "Cannot find module" になるため hoisted にする。
+      - name: ✂️ Prune devDependencies
+        run: pnpm install --prod --frozen-lockfile --ignore-scripts --config.node-linker=hoisted
+
+      - name: 🔑 Login to Azure
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 🚀 Deploy to Azure Functions
+        uses: Azure/functions-action@c5060b3b8bb1ebbcb531abd00c822ecbaa8ea656 # v1.5.7
+        with:
+          app-name: ${{ secrets.AZURE_FUNCTIONAPP_NAME }}
+          package: .
+          scm-do-build-during-deployment: false

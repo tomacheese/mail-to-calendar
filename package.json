@@ -1,0 +1,69 @@
+{
+  "name": "@tomacheese/mail-to-calendar",
+  "description": "Exchange Online の予約メールを Outlook 予定表へ自動登録する",
+  "version": "1.0.0",
+  "author": "tomacheese",
+  "bugs": {
+    "url": "https://github.com/tomacheese/mail-to-calendar/issues"
+  },
+  "devDependencies": {
+    "@book000/eslint-config": "1.16.98",
+    "@types/jest": "30.0.0",
+    "@types/node": "25.9.9",
+    "azure-functions-core-tools": "4.16.0",
+    "azurite": "3.37.0",
+    "eslint": "10.12.0",
+    "jest": "30.5.2",
+    "prettier": "3.9.10",
+    "run-z": "2.1.0",
+    "ts-jest": "29.4.14",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "homepage": "https://github.com/tomacheese/mail-to-calendar",
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "transform": {
+      "^.+\\.tsx?$": [
+        "ts-jest",
+        {
+          "tsconfig": "tsconfig.test.json"
+        }
+      ]
+    },
+    "globalSetup": "<rootDir>/test/global-setup.ts",
+    "globalTeardown": "<rootDir>/test/global-teardown.ts"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tomacheese/mail-to-calendar.git"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch --env-file=.env ./src/main.ts",
+    "fix": "run-z fix:prettier fix:eslint",
+    "fix:eslint": "eslint src/ -c eslint.config.mjs --fix",
+    "fix:prettier": "prettier --write src/",
+    "lint": "run-z lint:prettier,lint:eslint,lint:tsc",
+    "lint:eslint": "eslint src/ -c eslint.config.mjs",
+    "lint:prettier": "prettier --check src/",
+    "lint:tsc": "tsc --noEmit",
+    "preinstall": "npx only-allow pnpm",
+    "start": "tsx --env-file=.env ./src/main.ts",
+    "start:func": "pnpm build && func start",
+    "test": "jest --runInBand --passWithNoTests --detectOpenHandles --forceExit",
+    "test:e2e": "tsx --env-file=.env ./test/corpus.ts",
+    "watch": "tsc -p tsconfig.build.json --watch"
+  },
+  "main": "dist/functions/*.js",
+  "dependencies": {
+    "@azure/data-tables": "13.3.2",
+    "@azure/functions": "4.16.5",
+    "zod": "4.6.7"
+  }
+}

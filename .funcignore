@@ -1,0 +1,12 @@
+*.js.map
+*.ts
+.git*
+.vscode
+node_modules/.bin
+test
+docs
+scripts
+local.settings.json
+.env
+.mcp-auth-token
+*.log
