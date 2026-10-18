@@ -1,4 +1,6 @@
 allowBuilds:
+  '@parcel/watcher': false
+  protobufjs: false
   azure-functions-core-tools: true
   esbuild: true
   unrs-resolver: true
