@@ -65,5 +65,6 @@
     "@azure/data-tables": "13.3.2",
     "@azure/functions": "4.16.5",
     "zod": "4.6.7"
-  }
+  },
+  "packageManager": "pnpm@12.13.0"
 }
