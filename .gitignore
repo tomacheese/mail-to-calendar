@@ -157,3 +157,6 @@ __tablestorage__
 azurite-data
 local.settings.json
 infra/main.json
+
+# Local design notes (not published)
+spec.md
