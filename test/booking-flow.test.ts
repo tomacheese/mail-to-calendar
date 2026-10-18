@@ -1,4 +1,4 @@
-// Requires Azurite table service on 127.0.0.1:10002 (npx -p azurite azurite-table). Graph is stubbed; nothing leaves the machine.
+// Azurite is started by test/global-setup.ts on a free port. Graph is stubbed; nothing leaves the machine.
 import { randomUUID } from 'node:crypto'
 import { processMail } from '../src/core/process-mail'
 import { State } from '../src/integrations/state'
@@ -230,4 +230,63 @@ it('場所の無い更新メールの後でも、手を加えていない予定�
     mk('cancel', t2, n)
   )
   expect(result[0]).toMatchObject({ op: 'cancel', applied: true })
+})
+
+describe('状態遷移の補強', () => {
+  it('取消済みの予約に再度取消が来ても、状態を変えず削除も繰り返さない', async () => {
+    const state = new State(cfg('full'))
+    await state.init()
+    const { g, calls } = stub()
+    const n = `N-${randomUUID().slice(0, 8)}`
+    const t = `${soon(5)}T10:00:00`
+    await processMail(cfg('full'), g, state, mail(t), mk('confirmed', t, n))
+    await processMail(cfg('full'), g, state, mail(t), mk('cancel', t, n))
+    const again = await processMail(
+      cfg('full'),
+      g,
+      state,
+      mail(t),
+      mk('cancel', t, n)
+    )
+    expect(again[0]).toMatchObject({ op: 'skip', note: 'already cancelled' })
+    expect(calls).toEqual(['create', 'delete'])
+    const [row] = await state.findByNumber(n.toLowerCase())
+    expect(row?.status).toBe('cancelled')
+  })
+
+  it('update は仮予約を確定に昇格させない', async () => {
+    const state = new State(cfg('full'))
+    await state.init()
+    const { g } = stub()
+    const n = `N-${randomUUID().slice(0, 8)}`
+    const t1 = `${soon(5)}T10:00:00`
+    const t2 = `${soon(6)}T11:00:00`
+    await processMail(cfg('full'), g, state, mail(t1), mk('tentative', t1, n))
+    await processMail(cfg('full'), g, state, mail(t2), mk('update', t2, n))
+    const [row] = await state.findByNumber(n.toLowerCase())
+    expect(row?.tentative).toBe(true)
+  })
+
+  it('空白だけの予約番号は番号なしとして扱い、既存の予約に一致させない', async () => {
+    const state = new State(cfg('full'))
+    await state.init()
+    const { g, calls } = stub()
+    const t1 = `${soon(5)}T10:00:00`
+    const t2 = `${soon(6)}T11:00:00`
+    const first = mk('confirmed', t1, '')
+    first.bookings[0]!.provider = `P-${randomUUID().slice(0, 8)}`
+    await processMail(cfg('full'), g, state, mail(t1), first)
+    const blank = mk('cancel', t2, '   ')
+    blank.bookings[0]!.start_at = null
+    blank.bookings[0]!.evidence = []
+    const result = await processMail(
+      cfg('full'),
+      g,
+      state,
+      { ...mail(t2), bodyText: 'キャンセルしました' },
+      blank
+    )
+    expect(result[0]?.op).toBe('hold')
+    expect(calls).toEqual(['create'])
+  })
 })

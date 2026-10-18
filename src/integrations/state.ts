@@ -70,14 +70,14 @@ export class State {
     })
   }
 
-  /** A `dry-run:*` mark only suppresses re-analysis in dry-run; write modes still process the mail. */
-  async isProcessed(id: string, dryRun: boolean) {
+  /** Returns the recorded result of a mail (`<action>`, `dry-run:*`, `error:*` or `retry:<n>`), if any. */
+  async getProcessedResult(id: string): Promise<string | undefined> {
     const r = await this.get<{ result: string }>(
       this.t.ProcessedMessages,
       'm',
       sha(id)
     )
-    return !!r && (dryRun || !r.result.startsWith('dry-run'))
+    return r?.result
   }
   /** Records that a mail was handled; plan holds the dry-run operations. */
   markProcessed(id: string, result: string, receivedAt: Date, plan = '') {
@@ -133,4 +133,22 @@ export class State {
       ...rest,
     })
   }
+}
+
+/**
+ * Whether a recorded result settles the mail. A `dry-run:*` mark only suppresses re-analysis in dry-run, and `retry:<n>` never settles it.
+ */
+export function isSettled(
+  result: string | undefined,
+  dryRun: boolean
+): boolean {
+  const pending = result === undefined || result.startsWith('retry:')
+  return !pending && (dryRun || !result.startsWith('dry-run'))
+}
+
+/** Number of failed attempts recorded for a mail. */
+export function failedAttempts(result: string | undefined): number {
+  return result?.startsWith('retry:')
+    ? Number(result.slice('retry:'.length))
+    : 0
 }

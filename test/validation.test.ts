@@ -94,4 +94,11 @@ describe('validateBooking', () => {
       validateBooking(relative, received, 'ご希望: 来週火曜日 11時', 60).ok
     ).toBe(false)
   })
+
+  it('カレンダーに入るテキストが長すぎる場合は拒否する', () => {
+    const long = 'あ'.repeat(201)
+    expect(
+      validateBooking({ ...base, subject: long }, received, body, 60)
+    ).toEqual({ ok: false, reason: 'subject is longer than 200 characters' })
+  })
 })

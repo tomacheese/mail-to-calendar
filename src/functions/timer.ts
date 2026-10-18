@@ -7,12 +7,12 @@ app.timer('scanInbox', {
   handler: async (_t, ctx) => {
     const cfg = loadConfig()
     if (!cfg.MAIL_POLLING_ENABLED) return
-    // Counts only: mail content and event details stay out of logs.
+    // runScan logs counts, hashed message ids and error classes, never mail content or event details.
     const s = await runScan(cfg, (m) => {
       ctx.log(m)
     })
     ctx.log(
-      `scan done: seen=${s.seen} processed=${s.processed} ops=${s.ops.length} applied=${s.ops.filter((o) => o.applied).length} failures=${s.failures}`
+      `scan done: seen=${s.seen} processed=${s.processed} ops=${s.ops.length} applied=${s.ops.filter((o) => o.applied).length} failures=${s.failures} deferred=${s.deferred}`
     )
     if (s.failures) throw new Error('scan had failures; cursor not advanced')
   },

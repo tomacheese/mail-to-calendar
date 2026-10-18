@@ -106,6 +106,8 @@ function scenario() {
     nextLink: 0,
     foundryFail: false,
     foundryStatus: 200,
+    badOutput: false,
+    gone: false,
     creates: 0,
     lastEvent: {} as Record<string, any>,
     link: 1,
@@ -117,6 +119,10 @@ function scenario() {
     if (url.includes('openai/v1')) {
       if (s.foundryFail) throw new Error('network down')
       if (s.foundryStatus !== 200) return json({}, s.foundryStatus)
+      if (s.badOutput)
+        return json({
+          choices: [{ message: { content: 'SECRET-FRAGMENT {not json' } }],
+        })
       const start = new Date(Date.now() + 5 * 86400e3)
       const d = start.toISOString().slice(0, 10),
         md = `${start.getUTCMonth() + 1}月${start.getUTCDate()}日 10:00`
@@ -146,6 +152,10 @@ function scenario() {
           },
         ],
       })
+    }
+    if (url.includes('deltatoken') && s.gone) {
+      s.gone = false
+      return json({ error: { code: 'syncStateNotFound' } }, 410)
     }
     if (url.includes('/messages/delta') || url.includes('deltatoken')) {
       const value = s.delta.splice(0)
@@ -258,4 +268,86 @@ it('runScan: removed/draft/old messages are ignored; dry-run never marks process
   const full = await runScan({ ...cfg, CALENDAR_WRITE_MODE: 'full' }, quiet)
   expect(full.processed).toBe(1)
   expect(s.creates).toBe(1)
+})
+
+const mailRef = (id: string, offsetMs = 1000) => ({
+  id,
+  receivedDateTime: new Date(Date.now() + offsetMs).toISOString(),
+})
+const fullConfig = (extra: Record<string, string> = {}) => ({
+  ...loadConfig({ ...env(), ...extra }),
+  CALENDAR_WRITE_MODE: 'full' as const,
+})
+
+describe('失敗の扱い', () => {
+  it('認証エラー(401)は保留にせず、設定が直れば同じメールを処理する', async () => {
+    const s = scenario()
+    const cfg = fullConfig()
+    await runScan(cfg, quiet)
+    s.delta = [mailRef('m1')]
+    s.foundryStatus = 401
+    const failed = await runScan(cfg, quiet)
+    expect(failed).toMatchObject({ failures: 1, processed: 0 })
+
+    s.foundryStatus = 200
+    s.delta = [mailRef('m1')]
+    const recovered = await runScan(cfg, quiet)
+    expect(recovered).toMatchObject({ failures: 0, processed: 1 })
+    expect(s.creates).toBe(1)
+  })
+
+  it('失敗したメールより後のメールは、同じ実行では処理しない', async () => {
+    const s = scenario()
+    const cfg = fullConfig()
+    await runScan(cfg, quiet)
+    s.delta = [mailRef('older', 1000), mailRef('newer', 2000)]
+    s.foundryStatus = 401
+    const failed = await runScan(cfg, quiet)
+    expect(failed).toMatchObject({ failures: 1, processed: 0 })
+
+    s.foundryStatus = 200
+    s.delta = [mailRef('older', 1000), mailRef('newer', 2000)]
+    const recovered = await runScan(cfg, quiet)
+    expect(recovered).toMatchObject({ failures: 0, processed: 2 })
+  })
+
+  it('メール固有の失敗は3回まで再試行し、超えたら保留してカーソルを進める', async () => {
+    const s = scenario()
+    const cfg = fullConfig()
+    const logs: string[] = []
+    await runScan(cfg, quiet)
+    s.badOutput = true
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      s.delta = [mailRef('poison')]
+      const run = await runScan(cfg, (m) => logs.push(m))
+      expect(run).toMatchObject({ failures: 1, processed: 0 })
+    }
+    s.delta = [mailRef('poison')]
+    const parked = await runScan(cfg, quiet)
+    expect(parked).toMatchObject({ failures: 0, processed: 0 })
+    expect(logs.join('\n')).not.toContain('SECRET-FRAGMENT')
+  })
+
+  it('呼び出し上限は失敗ではなく保留として扱い、残りは次の実行で処理する', async () => {
+    const s = scenario()
+    const cfg = fullConfig({ FOUNDRY_MAX_CALLS_PER_RUN: '1' })
+    await runScan(cfg, quiet)
+    s.delta = [mailRef('a', 1000), mailRef('b', 2000)]
+    const first = await runScan(cfg, quiet)
+    expect(first).toMatchObject({ failures: 0, deferred: 1, processed: 1 })
+
+    s.delta = [mailRef('a', 1000), mailRef('b', 2000)]
+    const second = await runScan(cfg, quiet)
+    expect(second).toMatchObject({ failures: 0, deferred: 0, processed: 1 })
+  })
+
+  it('delta トークンが失効(410)しても、最初から辿り直して処理を続ける', async () => {
+    const s = scenario()
+    const cfg = fullConfig()
+    await runScan(cfg, quiet)
+    s.gone = true
+    s.delta = [mailRef('after-expiry')]
+    const run = await runScan(cfg, quiet)
+    expect(run).toMatchObject({ failures: 0, processed: 1 })
+  })
 })
