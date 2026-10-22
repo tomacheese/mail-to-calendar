@@ -14,12 +14,30 @@ export interface BookingRow {
   timezone: string
   fingerprint: string
   status: 'active' | 'cancelled' | 'detached'
+  /** Receipt time of the latest mail whose change was applied; rows written before this field existed have none. */
+  sourceReceivedAt?: string
+}
+/** An update/cancel that matched no managed booking when its mail was handled, kept until the booking appears or the item closes. */
+export interface PendingRow {
+  key: string
+  status: 'open' | 'done' | 'superseded' | 'expired' | 'failed'
+  action: 'update' | 'cancel'
+  number: string
+  receivedAt: string
+  payload: string
+  reason: string
+  attempts: number
+  createdAt: string
+  expiresAt: string
 }
 export const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 
-/** Persistent state on Azure Tables: sync cursor, processed mails and managed bookings. */
+/** Persistent state on Azure Tables: sync cursor, processed mails, managed bookings and pending update/cancel items. */
 export class State {
-  private t: Record<'SyncState' | 'ProcessedMessages' | 'Bookings', TableClient>
+  private t: Record<
+    'SyncState' | 'ProcessedMessages' | 'Bookings' | 'PendingOps',
+    TableClient
+  >
   constructor(cfg: Config) {
     const mk = (n: string) =>
       TableClient.fromConnectionString(
@@ -31,6 +49,7 @@ export class State {
       SyncState: mk('SyncState'),
       ProcessedMessages: mk('ProcessedMessages'),
       Bookings: mk('Bookings'),
+      PendingOps: mk('PendingOps'),
     }
   }
   /** Creates the tables if they do not exist. */
@@ -149,6 +168,56 @@ export class State {
       rowKey: key,
       ...rest,
     })
+  }
+
+  /** Stores a pending item unless one with the same key exists; returns false for that duplicate so replays are harmless. */
+  async enqueuePending(row: PendingRow): Promise<boolean> {
+    const { key, ...rest } = row
+    try {
+      await this.t.PendingOps.createEntity({
+        partitionKey: 'p',
+        rowKey: key,
+        ...rest,
+      })
+      return true
+    } catch (error) {
+      if ((error as { statusCode?: number }).statusCode === 409) return false
+      throw error
+    }
+  }
+  /** Open pending items, oldest mail first so a change is never applied before an earlier one. */
+  async listOpenPending(): Promise<PendingRow[]> {
+    const out: PendingRow[] = []
+    const entities = this.t.PendingOps.listEntities<
+      Omit<PendingRow, 'key'> & { rowKey: string }
+    >({
+      queryOptions: { filter: "PartitionKey eq 'p' and status eq 'open'" },
+    })
+    for await (const e of entities) {
+      out.push({
+        key: e.rowKey,
+        status: e.status,
+        action: e.action,
+        number: e.number,
+        receivedAt: e.receivedAt,
+        payload: e.payload,
+        reason: e.reason,
+        attempts: e.attempts,
+        createdAt: e.createdAt,
+        expiresAt: e.expiresAt,
+      })
+    }
+    return out.toSorted((a, b) => a.receivedAt.localeCompare(b.receivedAt))
+  }
+  /** Updates the outcome fields of a pending item (last writer wins). */
+  updatePending(
+    key: string,
+    patch: Partial<Pick<PendingRow, 'status' | 'reason' | 'attempts'>>
+  ) {
+    return this.t.PendingOps.updateEntity(
+      { partitionKey: 'p', rowKey: key, ...patch },
+      'Merge'
+    )
   }
 }
 

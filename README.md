@@ -51,6 +51,14 @@ pnpm lint               # prettier / eslint / tsc
 pnpm fix                # prettier / eslint の自動修正
 ```
 
+## 一致する予約がない変更・取消メール
+
+`CALENDAR_WRITE_MODE=full` のとき、変更（update）・取消（cancel）メールに一致する管理対象の予約がなければ、カレンダーには触れずに状態保存先の `PendingOps` テーブルへ保留として積む。保留は 14 日間、毎回のスキャンの最後に再評価され、予約が作られた時点で反映される。
+
+- 予約がより新しいメールで更新・作成済みなら、古い変更・取消は反映せず破棄する（`superseded`）
+- 反映すれば `done`、14 日を過ぎれば `expired`、保存内容の破損や Graph の項目固有エラーで 3 回失敗すれば `failed` として閉じる。閉じた項目も記録として残る
+- `dry-run` / `create-only` では積まない
+
 ## ディレクトリ構成
 
 ```text
