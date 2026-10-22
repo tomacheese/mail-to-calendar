@@ -98,20 +98,28 @@ export function renderEvent(b: ValidBooking, tentative: boolean) {
 }
 
 /**
- * Looks up the managed booking for a reservation: by number when present, otherwise by provider and start.
- * Returns the stored row (if any), the key to use for a new row, and `ambiguous` when several rows share the number.
+ * Looks up the managed booking for a reservation.
+ * Different providers can issue the same number, so a number alone never selects a row.
  */
 async function findExisting(
   state: State,
   b: ValidBooking
-): Promise<{ row?: BookingRow; key: string; ambiguous?: boolean }> {
+): Promise<{
+  row?: BookingRow
+  key: string
+  ambiguous?: boolean
+  otherProvider?: boolean
+}> {
   if (b.reservation_number) {
     const n = norm(b.reservation_number)
+    const provider = norm(b.provider)
     const hits = await state.findByNumber(n)
-    if (hits.length > 1) return { key: '', ambiguous: true }
+    const same = hits.filter((h) => norm(h.provider) === provider)
+    if (same.length > 1) return { key: '', ambiguous: true }
     return {
-      row: hits[0],
-      key: hits[0]?.key ?? sha(`${norm(b.provider)}|${n}`),
+      row: same[0],
+      key: same[0]?.key ?? sha(`${provider}|${n}`),
+      otherProvider: same.length === 0 && hits.length > 0,
     }
   }
   const key = sha(`${norm(b.provider)}|${b.start}`)
@@ -144,7 +152,9 @@ async function handleBooking(
     return {
       op: 'hold',
       ...base,
-      note: 'no managed booking matches (not touching calendar)',
+      note: found.otherProvider
+        ? 'reservation number belongs to a different provider (not touching calendar)'
+        : 'no managed booking matches (not touching calendar)',
       applied: false,
     }
   if (row?.status === 'detached')

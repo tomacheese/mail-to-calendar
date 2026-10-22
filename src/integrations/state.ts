@@ -128,7 +128,7 @@ export class State {
     const e = await this.get<BookingRow>(this.t.Bookings, 'b', key)
     return e && { ...e, key }
   }
-  /** Bookings sharing a reservation number (providers may differ in spelling, so match on number only). */
+  /** Bookings sharing a reservation number across all providers; callers narrow by provider. */
   async findByNumber(number: string): Promise<BookingRow[]> {
     const out: BookingRow[] = []
     const entities = this.t.Bookings.listEntities<
