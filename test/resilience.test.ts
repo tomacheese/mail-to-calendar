@@ -5,6 +5,7 @@ import { runScan } from '../src/core/process-mail'
 import { Graph } from '../src/integrations/graph'
 import { Foundry } from '../src/integrations/foundry'
 import { State } from '../src/integrations/state'
+import { pendingItem, pendingRows } from './pending-helpers'
 
 const env = () => ({
   GRAPH_TENANT_ID: randomUUID(),
@@ -112,6 +113,11 @@ function scenario() {
     eventStatus: 201,
     gone: false,
     creates: 0,
+    deletes: 0,
+    deleteStatus: 204,
+    action: 'confirmed',
+    number: undefined as string | undefined,
+    mailReceivedAt: undefined as string | undefined,
     lastEvent: {} as Record<string, any>,
     link: 1,
   }
@@ -134,7 +140,7 @@ function scenario() {
           {
             message: {
               content: JSON.stringify({
-                action: 'confirmed',
+                action: s.action,
                 reason: '',
                 bookings: [
                   {
@@ -144,7 +150,7 @@ function scenario() {
                     end_at: null,
                     timezone: 'Asia/Tokyo',
                     location: null,
-                    reservation_number: 'Z' + s.link,
+                    reservation_number: s.number ?? 'Z' + s.link,
                     details: '',
                     evidence: [md],
                     target_reservation_hint: null,
@@ -166,6 +172,12 @@ function scenario() {
         value,
         '@odata.deltaLink': `https://graph.microsoft.com/v1.0/x/messages/delta?deltatoken=${++s.link}`,
       })
+    }
+    if (url.includes('/events/') && init?.method === 'DELETE') {
+      if (s.deleteStatus !== 204)
+        return json({ error: { code: 'ErrorInvalidRequest' } }, s.deleteStatus)
+      s.deletes++
+      return new Response(null, { status: 204 })
     }
     if (url.includes('/events/') && init?.method === 'GET') {
       const e = s.lastEvent
@@ -199,7 +211,7 @@ function scenario() {
       const d = new Date(Date.now() + 5 * 86400e3)
       return json({
         subject: '予約',
-        receivedDateTime: new Date().toISOString(),
+        receivedDateTime: s.mailReceivedAt ?? new Date().toISOString(),
         from: { emailAddress: { address: 'a@b.c' } },
         body: { content: `${d.getUTCMonth() + 1}月${d.getUTCDate()}日 10:00` },
       })
@@ -464,5 +476,85 @@ describe('Graph の失敗と連続保留', () => {
     s.delta = [mailRef('m1', 1000), mailRef('m2', 2000), mailRef('m3', 3000)]
     const recovered = await runScan(cfg, quiet)
     expect(recovered).toMatchObject({ failures: 0, processed: 1 })
+  })
+})
+
+describe('保留した取消の再評価', () => {
+  const seed = async (cfg: ReturnType<typeof fullConfig>, number: string) => {
+    const state = new State(cfg)
+    await state.enqueuePending(pendingItem(number, new Date(Date.now() + 5000)))
+    return state
+  }
+
+  it('先に届いた取消は保留され、後から予約が作られたスキャンで反映される', async () => {
+    const s = scenario()
+    const cfg = fullConfig()
+    s.number = 'PEND-1'
+    await runScan(cfg, quiet)
+    const base = Date.now()
+
+    s.action = 'cancel'
+    s.mailReceivedAt = new Date(base + 2000).toISOString()
+    s.delta = [{ id: 'cancel', receivedDateTime: s.mailReceivedAt }]
+    expect(await runScan(cfg, quiet)).toMatchObject({
+      failures: 0,
+      processed: 1,
+    })
+    expect([s.creates, s.deletes]).toEqual([0, 0])
+    expect(await pendingRows(cfg)).toMatchObject([{ status: 'open' }])
+
+    s.action = 'confirmed'
+    s.mailReceivedAt = new Date(base + 1000).toISOString()
+    s.delta = [{ id: 'confirm', receivedDateTime: s.mailReceivedAt }]
+    const run = await runScan(cfg, quiet)
+    expect(run).toMatchObject({ failures: 0, processed: 1 })
+    expect(run.ops.map((o) => [o.op, o.applied])).toEqual([
+      ['create', true],
+      ['cancel', true],
+    ])
+    expect([s.creates, s.deletes]).toEqual([1, 1])
+    expect(await pendingRows(cfg)).toMatchObject([{ status: 'done' }])
+  })
+
+  it('dry-run と create-only のスキャンは保留項目を再評価せず、full なら反映する', async () => {
+    const s = scenario()
+    const cfg = fullConfig()
+    s.number = 'PEND-2'
+    await runScan(cfg, quiet)
+    s.delta = [mailRef('m1')]
+    await runScan(cfg, quiet)
+    expect(s.creates).toBe(1)
+    await seed(cfg, 'PEND-2')
+
+    for (const mode of ['dry-run', 'create-only'] as const) {
+      await runScan({ ...cfg, CALENDAR_WRITE_MODE: mode }, quiet)
+      expect(s.deletes).toBe(0)
+      expect(await pendingRows(cfg)).toMatchObject([{ status: 'open' }])
+    }
+
+    await runScan(cfg, quiet)
+    expect(s.deletes).toBe(1)
+    expect(await pendingRows(cfg)).toMatchObject([{ status: 'done' }])
+  })
+
+  it('再評価で Graph が失敗してもスキャンは成功し、カーソルは進み、項目は残る', async () => {
+    const s = scenario()
+    const cfg = fullConfig()
+    s.number = 'PEND-3'
+    await runScan(cfg, quiet)
+    s.delta = [mailRef('m1')]
+    await runScan(cfg, quiet)
+    await seed(cfg, 'PEND-3')
+    const cursor = async () => (await new State(cfg).getSync())?.deltaLink
+    const before = await cursor()
+
+    s.deleteStatus = 500
+    const run = await runScan(cfg, quiet)
+    expect(run.failures).toBe(0)
+    expect(await cursor()).not.toBe(before)
+    expect(s.deletes).toBe(0)
+    expect(await pendingRows(cfg)).toMatchObject([
+      { status: 'open', attempts: 0 },
+    ])
   })
 })

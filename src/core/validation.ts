@@ -10,7 +10,7 @@ export const ACTIONS = [
 ] as const
 export type Action = (typeof ACTIONS)[number]
 
-const BookingSchema = z.object({
+export const BookingSchema = z.object({
   provider: z.string(),
   subject: z.string(),
   // Local wall-clock time without offset, e.g. 2026-10-20T14:30:00; zone is in `timezone`.
@@ -32,6 +32,12 @@ export const AnalysisSchema = z.object({
 
 export type Booking = z.infer<typeof BookingSchema>
 export type Analysis = z.infer<typeof AnalysisSchema>
+
+/** Stored form of an update/cancel that found no managed booking yet (a number-only cancel keeps empty start/end). */
+export const PendingPayloadSchema = z.object({
+  action: z.enum(['update', 'cancel']),
+  booking: BookingSchema.extend({ start: z.string(), end: z.string() }),
+})
 
 /** A booking that passed validation, with normalised local start/end. */
 export interface ValidBooking extends Booking {

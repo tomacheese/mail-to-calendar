@@ -14,7 +14,12 @@ import {
   type BookingRow,
 } from '../integrations/state'
 import { classifyFailure, describeError } from './failure'
-import { validateBooking, type Analysis, type ValidBooking } from './validation'
+import {
+  PendingPayloadSchema,
+  validateBooking,
+  type Analysis,
+  type ValidBooking,
+} from './validation'
 
 /** One calendar operation decided (and possibly applied) for a booking. */
 export interface Op {
@@ -118,16 +123,21 @@ async function findExisting(
   return { row: await state.getBooking(key), key }
 }
 
-/** Decides and applies the calendar operation for one booking, honouring CALENDAR_WRITE_MODE. */
+type Found = Awaited<ReturnType<typeof findExisting>>
+
+/**
+ * Decides and applies the calendar operation for one booking, honouring CALENDAR_WRITE_MODE.
+ * `receivedAt` is the receipt time of the mail the change comes from; it is stored so an older change is never applied over a newer one.
+ */
 async function handleBooking(
   cfg: Config,
   graph: Graph,
   state: State,
   action: Analysis['action'],
-  b: ValidBooking
+  b: ValidBooking,
+  found: Found,
+  receivedAt: Date
 ): Promise<Op> {
-  const mode = cfg.CALENDAR_WRITE_MODE
-  const found = await findExisting(state, b)
   if (found.ambiguous)
     return {
       op: 'hold',
@@ -135,6 +145,8 @@ async function handleBooking(
       note: 'multiple bookings share this number',
       applied: false,
     }
+  const mode = cfg.CALENDAR_WRITE_MODE
+  const sourceReceivedAt = receivedAt.toISOString()
   const { row, key } = found
   const tentative =
     action === 'tentative' || (action === 'update' && !!row?.tentative)
@@ -207,6 +219,7 @@ async function handleBooking(
       timezone: b.timezone,
       fingerprint: viewFingerprint(await graph.getEvent(ge.id, b.timezone)),
       status: 'active',
+      sourceReceivedAt,
     })
     return { op, ...base, applied: true }
   }
@@ -233,7 +246,7 @@ async function handleBooking(
   if (cancel) {
     // Cancellation deletes the event (Deleted Items keeps it recoverable); the Bookings row stays as the audit record and blocks resurrection.
     await graph.deleteEvent(row.eventId)
-    await state.putBooking({ ...row, status: 'cancelled' })
+    await state.putBooking({ ...row, status: 'cancelled', sourceReceivedAt })
     return { op, ...base, applied: true }
   }
   await graph.patchEvent(row.eventId, ev)
@@ -245,8 +258,76 @@ async function handleBooking(
     timezone: b.timezone,
     fingerprint: viewFingerprint(await graph.getEvent(row.eventId, b.timezone)),
     status: 'active',
+    sourceReceivedAt,
   })
   return { op, ...base, applied: true }
+}
+
+/** Time an update/cancel that matched no booking stays queued before it is dropped. */
+const PENDING_TTL_DAYS = 14
+
+/** Failed apply attempts after which a pending item is given up. */
+const PENDING_MAX_ATTEMPTS = 3
+
+/** Per-field bounds that keep the stored payload far below the Azure Tables property limit. */
+const PENDING_TEXT_MAX = 500
+const PENDING_DETAILS_MAX = 4000
+const PENDING_PAYLOAD_MAX = 30_000
+
+const clamp = (s: string, max: number) => s.slice(0, max)
+const clampOrNull = (s: string | null) =>
+  s === null ? null : clamp(s, PENDING_TEXT_MAX)
+
+/**
+ * Queues an update/cancel that found no managed booking so it can be re-evaluated once the booking exists.
+ * Text fields are bounded because a cancel skips the field limits of validateBooking.
+ */
+async function enqueueUnmatched(
+  state: State,
+  action: 'update' | 'cancel',
+  b: ValidBooking,
+  receivedAt: Date
+): Promise<void> {
+  const booking: ValidBooking = {
+    ...b,
+    provider: clamp(b.provider, PENDING_TEXT_MAX),
+    subject: clamp(b.subject, PENDING_TEXT_MAX),
+    location: clampOrNull(b.location),
+    reservation_number: clampOrNull(b.reservation_number),
+    timezone: clamp(b.timezone, PENDING_TEXT_MAX),
+    target_reservation_hint: clampOrNull(b.target_reservation_hint),
+    start_at: clampOrNull(b.start_at),
+    end_at: clampOrNull(b.end_at),
+    details: clamp(b.details, PENDING_DETAILS_MAX),
+    evidence: [],
+  }
+  const excess =
+    JSON.stringify({ action, booking }).length - PENDING_PAYLOAD_MAX
+  if (excess > 0) {
+    booking.details = booking.details.slice(
+      0,
+      Math.max(0, booking.details.length - excess)
+    )
+  }
+  const number = booking.reservation_number
+    ? norm(booking.reservation_number)
+    : ''
+  const matchKey = number || `${norm(booking.provider)}|${booking.start}`
+  const now = new Date()
+  await state.enqueuePending({
+    key: sha(`${action}|${matchKey}|${receivedAt.toISOString()}`),
+    status: 'open',
+    action,
+    number,
+    receivedAt: receivedAt.toISOString(),
+    payload: JSON.stringify({ action, booking }),
+    reason: 'no managed booking matches',
+    attempts: 0,
+    createdAt: now.toISOString(),
+    expiresAt: new Date(
+      now.getTime() + PENDING_TTL_DAYS * 86_400e3
+    ).toISOString(),
+  })
 }
 
 /** Applies one analysis according to CALENDAR_WRITE_MODE and returns the operations performed or planned. */
@@ -302,7 +383,27 @@ export async function processMail(
       })
       continue
     }
-    ops.push(await handleBooking(cfg, graph, state, analysis.action, v.value))
+    const found = await findExisting(state, v.value)
+    ops.push(
+      await handleBooking(
+        cfg,
+        graph,
+        state,
+        analysis.action,
+        v.value,
+        found,
+        mail.receivedAt
+      )
+    )
+    // Only full mode can ever apply an update/cancel later; dry-run and create-only would just accumulate dead items.
+    if (
+      cfg.CALENDAR_WRITE_MODE === 'full' &&
+      (analysis.action === 'update' || analysis.action === 'cancel') &&
+      !found.row &&
+      !found.ambiguous
+    ) {
+      await enqueueUnmatched(state, analysis.action, v.value, mail.receivedAt)
+    }
   }
   return ops
 }
@@ -324,6 +425,123 @@ const MAX_ATTEMPTS = 3
 
 /** After this many mails parked in a row the cause is assumed to be systemic (for example a model change), so parking stops. */
 const MAX_EXHAUSTED_STREAK = 2
+
+/** A stored pending payload that cannot be read back; retrying cannot help. */
+class PendingPayloadError extends Error {}
+
+/** Parses a stored pending payload, rejecting anything that is not the shape enqueueUnmatched wrote. */
+function parsePendingPayload(payload: string) {
+  let raw: unknown
+  try {
+    raw = JSON.parse(payload)
+  } catch {
+    throw new PendingPayloadError('stored pending payload is not valid JSON')
+  }
+  const parsed = PendingPayloadSchema.safeParse(raw)
+  if (!parsed.success) {
+    throw new PendingPayloadError('stored pending payload has an invalid shape')
+  }
+  return parsed.data
+}
+
+/** Failures tied to one item (a bad payload or a Graph 4xx about this event) count as an attempt; anything else is an outage. */
+function isPerItemFailure(error: unknown): boolean {
+  return (
+    error instanceof PendingPayloadError ||
+    (error instanceof GraphError &&
+      error.status >= 400 &&
+      error.status < 500 &&
+      ![401, 403, 408, 429].includes(error.status))
+  )
+}
+
+/**
+ * Re-evaluates queued update/cancel items against the bookings that exist now, oldest mail first.
+ * An item is applied only when no newer mail has changed its booking; item-level problems are logged and never thrown.
+ */
+export async function reconcilePending(
+  cfg: Config,
+  graph: Graph,
+  state: State,
+  log: (m: string) => void,
+  now = new Date()
+): Promise<Op[]> {
+  const items = await state.listOpenPending()
+  const ops: Op[] = []
+  const closed = { done: 0, superseded: 0, expired: 0, failed: 0 }
+  for (const item of items) {
+    const label = item.key.slice(0, 8)
+    try {
+      if (item.expiresAt <= now.toISOString()) {
+        await state.updatePending(item.key, {
+          status: 'expired',
+          reason: 'expired before a matching booking appeared',
+        })
+        closed.expired++
+        continue
+      }
+      const { action, booking } = parsePendingPayload(item.payload)
+      const found = await findExisting(state, booking)
+      if (found.ambiguous) {
+        await state.updatePending(item.key, {
+          status: 'done',
+          reason: 'multiple bookings share this number',
+        })
+        closed.done++
+        continue
+      }
+      if (!found.row) continue
+      if (
+        found.row.sourceReceivedAt !== undefined &&
+        found.row.sourceReceivedAt > item.receivedAt
+      ) {
+        await state.updatePending(item.key, {
+          status: 'superseded',
+          reason: 'a newer mail already changed the booking',
+        })
+        closed.superseded++
+        continue
+      }
+      const op = await handleBooking(
+        cfg,
+        graph,
+        state,
+        action,
+        booking,
+        found,
+        new Date(item.receivedAt)
+      )
+      ops.push(op)
+      await state.updatePending(item.key, {
+        status: 'done',
+        reason: op.note ?? 'applied',
+      })
+      closed.done++
+    } catch (error) {
+      log(`pending ${label} failed: ${describeError(error)}`)
+      if (!isPerItemFailure(error)) break
+      const attempts = item.attempts + 1
+      const failed = attempts >= PENDING_MAX_ATTEMPTS
+      try {
+        await state.updatePending(
+          item.key,
+          failed
+            ? { attempts, status: 'failed', reason: describeError(error) }
+            : { attempts }
+        )
+      } catch (updateError) {
+        log(`pending ${label} not updated: ${describeError(updateError)}`)
+        break
+      }
+      if (failed) closed.failed++
+    }
+  }
+  const open = items.length - Object.values(closed).reduce((a, n) => a + n, 0)
+  log(
+    `pending: open=${open} done=${closed.done} superseded=${closed.superseded} expired=${closed.expired} failed=${closed.failed}`
+  )
+  return ops
+}
 
 /**
  * Walks the Inbox delta, analyses new mail and applies the resulting operations.
@@ -465,6 +683,14 @@ export async function runScan(
     }
   }
   s.foundryCalls = foundry.calls
+  // Needs neither Foundry nor the delta, so it also runs when the loop stopped early; its failures never hold the cursor.
+  if (!dryRun && cfg.CALENDAR_WRITE_MODE === 'full') {
+    try {
+      s.ops.push(...(await reconcilePending(cfg, graph, state, log)))
+    } catch (error) {
+      log(`pending reconcile failed: ${describeError(error)}`)
+    }
+  }
   // Advance the cursor only when every message is settled; dry-run never advances it.
   if (!dryRun && s.failures === 0 && s.deferred === 0)
     await state.setSync(deltaLink, initializedAt)
