@@ -59,12 +59,13 @@ export async function stripSourceReceivedAt(
 export function pendingPayload(
   action: 'update' | 'cancel',
   number: string,
-  when: { start: string; end: string } = { start: '', end: '' }
+  when: { start: string; end: string } = { start: '', end: '' },
+  provider = 'テスト歯科'
 ): string {
   return JSON.stringify({
     action,
     booking: {
-      provider: 'テスト歯科',
+      provider,
       subject: '検診',
       start_at: null,
       end_at: null,

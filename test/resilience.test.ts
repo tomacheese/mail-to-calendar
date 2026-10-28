@@ -5,7 +5,7 @@ import { runScan } from '../src/core/process-mail'
 import { Graph } from '../src/integrations/graph'
 import { Foundry } from '../src/integrations/foundry'
 import { State } from '../src/integrations/state'
-import { pendingItem, pendingRows } from './pending-helpers'
+import { pendingItem, pendingPayload, pendingRows } from './pending-helpers'
 
 const env = () => ({
   GRAPH_TENANT_ID: randomUUID(),
@@ -482,7 +482,12 @@ describe('Graph の失敗と連続保留', () => {
 describe('保留した取消の再評価', () => {
   const seed = async (cfg: ReturnType<typeof fullConfig>, number: string) => {
     const state = new State(cfg)
-    await state.enqueuePending(pendingItem(number, new Date(Date.now() + 5000)))
+    // Matching is per provider, so the item must carry the scenario's provider ('P').
+    await state.enqueuePending(
+      pendingItem(number, new Date(Date.now() + 5000), {
+        payload: pendingPayload('cancel', number, undefined, 'P'),
+      })
+    )
     return state
   }
 
