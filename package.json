@@ -7,7 +7,7 @@
     "url": "https://github.com/tomacheese/mail-to-calendar/issues"
   },
   "devDependencies": {
-    "@book000/eslint-config": "1.16.107",
+    "@book000/eslint-config": "1.16.109",
     "@types/jest": "30.0.0",
     "@types/node": "26.6.5",
     "azure-functions-core-tools": "4.16.0",
