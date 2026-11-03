@@ -16,12 +16,12 @@ const body = 'ご予約日時： 10月20日　14:30 にお待ちしておりま�
 const received = new Date('2026-10-17T00:00:00Z')
 
 describe('validateBooking', () => {
-  it('終了時刻が無い場合は開始 + 60 分になる', () => {
+  it('without an end time, the end is start + 60 minutes', () => {
     const result = validateBooking(base, received, body, 60)
     expect(result.ok && result.value.end).toBe('2026-10-20T15:30:00')
   })
 
-  it('明示された終了時刻を優先し、開始以前なら既定値に戻す', () => {
+  it('an explicit end time wins, falling back to the default if it is not after the start', () => {
     const explicit = validateBooking(
       { ...base, end_at: '2026-10-20T16:00' },
       received,
@@ -39,7 +39,7 @@ describe('validateBooking', () => {
   })
 
   it.each([null, 'tomorrow', '2026-02-31T10:00:00'])(
-    '開始日時が不正な場合は拒否する: %s',
+    'rejects an invalid start datetime: %s',
     (startAt) => {
       expect(
         validateBooking({ ...base, start_at: startAt }, received, body, 60).ok
@@ -47,7 +47,7 @@ describe('validateBooking', () => {
     }
   )
 
-  it('不正なタイムゾーン・過去・遠すぎる未来を拒否する', () => {
+  it('rejects an invalid time zone, the past and a too-distant future', () => {
     expect(
       validateBooking({ ...base, timezone: 'Mars/Base' }, received, body, 60).ok
     ).toBe(false)
@@ -69,7 +69,7 @@ describe('validateBooking', () => {
     ).toBe(false)
   })
 
-  it('本文に存在しない根拠・数字を含まない根拠を拒否する', () => {
+  it('rejects evidence absent from the body or containing no digits', () => {
     expect(
       validateBooking(
         { ...base, evidence: ['12月1日 9:00'] },
@@ -88,21 +88,21 @@ describe('validateBooking', () => {
     ).toBe(false)
   })
 
-  it('相対日付のみの根拠を拒否する', () => {
+  it('rejects evidence consisting only of a relative date', () => {
     const relative = { ...base, evidence: ['来週火曜日 11時'] }
     expect(
       validateBooking(relative, received, 'ご希望: 来週火曜日 11時', 60).ok
     ).toBe(false)
   })
 
-  it('カレンダーに入るテキストが長すぎる場合は拒否する', () => {
+  it('rejects text that is too long for the calendar', () => {
     const long = 'あ'.repeat(201)
     expect(
       validateBooking({ ...base, subject: long }, received, body, 60)
     ).toEqual({ ok: false, reason: 'subject is longer than 200 characters' })
   })
 
-  it('取消では長いテキストでも拒否しない', () => {
+  it('a cancel is not rejected for long text', () => {
     const long = 'あ'.repeat(201)
     const result = validateBooking(
       { ...base, subject: long },

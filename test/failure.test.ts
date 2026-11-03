@@ -3,43 +3,43 @@ import { FoundryError, FoundryOutputError } from '../src/integrations/foundry'
 import { GraphError } from '../src/integrations/graph'
 
 describe('classifyFailure', () => {
-  it.each([400, 413, 422])('Foundry %i はメール固有', (status) => {
+  it.each([400, 413, 422])('Foundry %i is per-mail', (status) => {
     expect(classifyFailure(new FoundryError(status))).toBe('per-mail')
   })
 
   it.each([401, 403, 404, 408, 409, 429, 500, 503])(
-    'Foundry %i は設定・障害として扱う',
+    'Foundry %i is treated as a configuration or outage problem',
     (status) => {
       expect(classifyFailure(new FoundryError(status))).toBe('systemic')
     }
   )
 
-  it('モデル出力の不備はメール固有', () => {
+  it('a malformed model output is per-mail', () => {
     expect(classifyFailure(new FoundryOutputError('x'))).toBe('per-mail')
   })
 
   it.each([400, 401, 403, 404, 429, 503])(
-    'Graph %i はシステム全体の問題として扱う',
+    'Graph %i is treated as a systemic problem',
     (status) => {
       expect(classifyFailure(new GraphError(status, 'x'))).toBe('systemic')
     }
   )
 
-  it('不明なエラーはシステム全体の問題として扱う', () => {
+  it('an unknown error is treated as systemic', () => {
     expect(classifyFailure(new Error('boom'))).toBe('systemic')
     expect(classifyFailure('string')).toBe('systemic')
   })
 })
 
 describe('describeError', () => {
-  it('cause のエラーコードを添える', () => {
+  it('appends the error code from cause', () => {
     const error = new TypeError('fetch failed', {
       cause: { code: 'ENOTFOUND' },
     })
     expect(describeError(error)).toBe('fetch failed (ENOTFOUND)')
   })
 
-  it('Error 以外でも文字列を返す', () => {
+  it('returns a string even for non-Error values', () => {
     expect(describeError(undefined)).toBe('non-Error value thrown')
   })
 })

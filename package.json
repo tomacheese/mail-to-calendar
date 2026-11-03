@@ -1,6 +1,6 @@
 {
   "name": "@tomacheese/mail-to-calendar",
-  "description": "Exchange Online の予約メールを Outlook 予定表へ自動登録する",
+  "description": "Automatically registers booking emails from Exchange Online as Outlook calendar events",
   "version": "1.0.0",
   "author": "tomacheese",
   "bugs": {

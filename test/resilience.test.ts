@@ -36,8 +36,8 @@ it('config: invalid mode and swapped credentials are rejected without echoing va
       GRAPH_CLIENT_ID: 'abc~secretvalue_that_is_not_a_guid',
       GRAPH_CLIENT_SECRET: randomUUID(),
     })
-  ).toThrow(/^(?![\s\S]*secretvalue)/) // 値はエラーに含めない
-  expect(loadConfig(env()).CALENDAR_WRITE_MODE).toBe('dry-run') // 未設定は dry-run に倒す
+  ).toThrow(/^(?![\s\S]*secretvalue)/) // values must not appear in the error
+  expect(loadConfig(env()).CALENDAR_WRITE_MODE).toBe('dry-run') // unset falls back to dry-run
 })
 
 // ---- Graph retry / error hygiene ----
@@ -228,7 +228,7 @@ it('runScan: baseline → new mail → failure keeps cursor → retry succeeds �
 
   const base = await runScan(cfg, quiet)
   expect(base).toMatchObject({ baseline: true, processed: 0 })
-  expect(s.creates).toBe(0) // ベースラインでは予定を作らない
+  expect(s.creates).toBe(0) // the baseline run creates no events
 
   s.delta = [
     { id: 'm1', receivedDateTime: new Date(Date.now() + 1000).toISOString() },
@@ -247,7 +247,7 @@ it('runScan: baseline → new mail → failure keeps cursor → retry succeeds �
 
   s.delta = [{ id: 'm1', receivedDateTime: new Date().toISOString() }] // read-state change re-reports m1
   const again = await runScan(cfg, quiet)
-  expect(again.processed).toBe(0) // 処理済みメールは二重処理しない
+  expect(again.processed).toBe(0) // processed mail is not processed twice
   expect(s.creates).toBe(1)
 })
 
@@ -263,7 +263,7 @@ it('runScan: permanent Foundry 4xx parks the message and lets the cursor advance
   expect(r.failures).toBe(0)
   s.foundryStatus = 200
   s.delta = [{ id: 'bad', receivedDateTime: new Date().toISOString() }]
-  expect((await runScan(cfg, quiet)).processed).toBe(0) // 保留したメールは再試行しない
+  expect((await runScan(cfg, quiet)).processed).toBe(0) // parked mail is not retried
 })
 
 it('runScan: removed/draft/old messages are ignored; dry-run never marks processed or advances cursor', async () => {
@@ -281,7 +281,7 @@ it('runScan: removed/draft/old messages are ignored; dry-run never marks process
   s.delta = [{ id: 'n', receivedDateTime: future }]
   expect((await runScan(cfg, quiet)).processed).toBe(1)
   s.delta = [{ id: 'n', receivedDateTime: future }]
-  expect((await runScan(cfg, quiet)).processed).toBe(0) // dry-run は計画を記憶し、再推論しない
+  expect((await runScan(cfg, quiet)).processed).toBe(0) // dry-run remembers the plan and does not re-infer
   // Switching to a write mode replays it: the dry-run mark must not block real processing.
   s.delta = [{ id: 'n', receivedDateTime: future }]
   const full = await runScan({ ...cfg, CALENDAR_WRITE_MODE: 'full' }, quiet)
@@ -298,8 +298,8 @@ const fullConfig = (extra: Record<string, string> = {}) => ({
   CALENDAR_WRITE_MODE: 'full' as const,
 })
 
-describe('失敗の扱い', () => {
-  it('認証エラー(401)は保留にせず、設定が直れば同じメールを処理する', async () => {
+describe('failure handling', () => {
+  it('an auth error (401) is not parked, and the same mail is processed once the configuration is fixed', async () => {
     const s = scenario()
     const cfg = fullConfig()
     const cursor = async () => (await new State(cfg).getSync())?.deltaLink
@@ -319,7 +319,7 @@ describe('失敗の扱い', () => {
     expect(await cursor()).not.toBe(before)
   })
 
-  it('失敗したメールより後のメールは、同じ実行では処理しない', async () => {
+  it('mail after a failed one is not processed in the same run', async () => {
     const s = scenario()
     const cfg = fullConfig()
     await runScan(cfg, quiet)
@@ -334,7 +334,7 @@ describe('失敗の扱い', () => {
     expect(recovered).toMatchObject({ failures: 0, processed: 2 })
   })
 
-  it('メール固有の失敗は3回まで再試行し、超えたら保留してカーソルを進める', async () => {
+  it('a per-mail failure is retried up to 3 times, then parked and the cursor advances', async () => {
     const s = scenario()
     const cfg = fullConfig()
     const logs: string[] = []
@@ -355,7 +355,7 @@ describe('失敗の扱い', () => {
     expect(logs.join('\n')).not.toContain('LEAK')
   })
 
-  it('呼び出し上限は失敗ではなく保留として扱い、残りは次の実行で処理する', async () => {
+  it('the call limit defers rather than fails, and the rest is processed in the next run', async () => {
     const s = scenario()
     const cfg = fullConfig({ FOUNDRY_MAX_CALLS_PER_RUN: '1' })
     await runScan(cfg, quiet)
@@ -368,7 +368,7 @@ describe('失敗の扱い', () => {
     expect(second).toMatchObject({ failures: 0, deferred: 0, processed: 1 })
   })
 
-  it('delta トークンが失効(410)しても、最初から辿り直して処理を続ける', async () => {
+  it('an expired delta token (410) restarts the walk from scratch and processing continues', async () => {
     const s = scenario()
     const cfg = fullConfig()
     await runScan(cfg, quiet)
@@ -379,8 +379,8 @@ describe('失敗の扱い', () => {
   })
 })
 
-describe('プロンプトの組み立て', () => {
-  it('メール本文が email_body の区切りを閉じられず、件名・差出人は1行にまとめる', async () => {
+describe('prompt assembly', () => {
+  it('the mail body cannot close the email_body delimiter, and subject and sender are collapsed to one line', async () => {
     let sent = ''
     globalThis.fetch = (async (_url: string, init?: RequestInit) => {
       sent = String(init?.body)
@@ -413,7 +413,7 @@ describe('プロンプトの組み立て', () => {
     expect(user).toContain('From: a@example.com X: y')
   })
 
-  it('トークン取得の失敗には AADSTS コードだけを含める', async () => {
+  it('a token acquisition failure includes only the AADSTS code', async () => {
     globalThis.fetch = (async () =>
       json(
         {
@@ -429,8 +429,8 @@ describe('プロンプトの組み立て', () => {
   })
 })
 
-describe('Graph の失敗と連続保留', () => {
-  it('カレンダー書き込みの 4xx はメール固有とせず、保留しないで失敗として扱う', async () => {
+describe('Graph failures and consecutive parking', () => {
+  it('a calendar write 4xx is not per-mail: it is a failure and is not parked', async () => {
     const s = scenario()
     const cfg = fullConfig()
     await runScan(cfg, quiet)
@@ -446,7 +446,7 @@ describe('Graph の失敗と連続保留', () => {
     expect(s.creates).toBe(1)
   })
 
-  it('取得できないメール(404)は処理済みにして、カーソルを進める', async () => {
+  it('an unfetchable mail (404) is marked processed and the cursor advances', async () => {
     const s = scenario()
     const cfg = fullConfig()
     const cursor = async () => (await new State(cfg).getSync())?.deltaLink
@@ -459,7 +459,7 @@ describe('Graph の失敗と連続保留', () => {
     expect(await cursor()).not.toBe(before)
   })
 
-  it('保留が連続したら、それ以降は保留せず失敗のまま止めて、直れば処理する', async () => {
+  it('after consecutive parks, stop parking and stay failed, then process once fixed', async () => {
     const s = scenario()
     const cfg = fullConfig()
     await runScan(cfg, quiet)
@@ -479,7 +479,7 @@ describe('Graph の失敗と連続保留', () => {
   })
 })
 
-describe('保留した取消の再評価', () => {
+describe('re-evaluation of parked cancels', () => {
   const seed = async (cfg: ReturnType<typeof fullConfig>, number: string) => {
     const state = new State(cfg)
     // Matching is per provider, so the item must carry the scenario's provider ('P').
@@ -491,7 +491,7 @@ describe('保留した取消の再評価', () => {
     return state
   }
 
-  it('先に届いた取消は保留され、後から予約が作られたスキャンで反映される', async () => {
+  it('a cancel that arrives first is parked and applied in the scan where the booking is created later', async () => {
     const s = scenario()
     const cfg = fullConfig()
     s.number = 'PEND-1'
@@ -521,7 +521,7 @@ describe('保留した取消の再評価', () => {
     expect(await pendingRows(cfg)).toMatchObject([{ status: 'done' }])
   })
 
-  it('dry-run と create-only のスキャンは保留項目を再評価せず、full なら反映する', async () => {
+  it('dry-run and create-only scans do not re-evaluate pending items, while full applies them', async () => {
     const s = scenario()
     const cfg = fullConfig()
     s.number = 'PEND-2'
@@ -542,7 +542,7 @@ describe('保留した取消の再評価', () => {
     expect(await pendingRows(cfg)).toMatchObject([{ status: 'done' }])
   })
 
-  it('再評価で Graph が失敗してもスキャンは成功し、カーソルは進み、項目は残る', async () => {
+  it('a Graph failure during re-evaluation still lets the scan succeed, the cursor advances and the item remains', async () => {
     const s = scenario()
     const cfg = fullConfig()
     s.number = 'PEND-3'

@@ -1,80 +1,81 @@
 # mail-to-calendar
 
-Exchange Online の受信トレイに届いた予約・予定関連のメールを Microsoft Foundry で解析し、Outlook のメインカレンダーへ予定として自動登録する。Azure Functions (v4, Node.js, Flex Consumption) 上で 5 分ごとの Timer Trigger として動作する。
+Analyzes booking and appointment emails that arrive in an Exchange Online Inbox with Microsoft Foundry and automatically registers them as events in the Outlook main calendar. It runs as a 5-minute Timer Trigger on Azure Functions (v4, Node.js, Flex Consumption).
 
-- メール取得: Microsoft Graph の Inbox Delta（新着のみ。初回は基準点を作るだけで過去メールは登録しない）
-- 解析: 既存の Microsoft Foundry（API キー認証）で分類・日時抽出し、アプリ側で日時・根拠・予約の同一性を再検証
-- 登録: 確定は `busy`、仮予約は `【仮】` + `tentative`。変更は更新、取消は削除（削除済みアイテムに移動）
-- 予約は「施設名 + 予約番号」で同一性を判定する。別の施設の予約番号と一致しても、既存の予定の更新・削除は行わず保留する（同じ施設でも表記が大きく異なる場合は別の施設として扱う）
-- 手動編集された予定は上書きしない。管理対象は自動作成した予定のみ
+- Mail retrieval: Microsoft Graph Inbox Delta (new mail only; the first run just establishes a baseline and does not register past mail)
+- Analysis: classification and date/time extraction with an existing Microsoft Foundry deployment (API key authentication); the app then re-validates the date/time, the evidence and booking identity
+- Registration: confirmed bookings are `busy`; tentative ones get a `【仮】` subject prefix and `tentative`. Updates modify the event, cancellations delete it (moved to Deleted Items)
+- A booking is identified by "provider + reservation number". If another provider's booking has the same reservation number, the existing event is not updated or deleted and the mail is held (even the same provider is treated as a different one if its name differs substantially)
+- Events edited by hand are never overwritten; only events created automatically are managed
 
-## セットアップ
+## Setup
 
-### 必要環境
+### Requirements
 
-- Node.js（バージョンは `.node-version` 参照）
-- pnpm（`preinstall` で `only-allow pnpm` を強制）
+- Node.js (see `.node-version` for the version)
+- pnpm (enforced by `only-allow pnpm` in `preinstall`)
 
 ```bash
 pnpm install
 ```
 
-### 環境変数
+### Environment variables
 
-ローカルは `.env`（Git 管理外）、Functions では `local.settings.json` の `Values` / アプリ設定に設定する。雛形は [`.env.example`](./.env.example)。
+Locally, set them in `.env` (not tracked by Git); for Functions, use `local.settings.json` `Values` or app settings. The template is [`.env.example`](./.env.example).
 
-| 変数名                                                        | 必須 | 説明                                                                 |
-| ------------------------------------------------------------- | ---- | -------------------------------------------------------------------- |
-| `GRAPH_TENANT_ID` / `GRAPH_CLIENT_ID` / `GRAPH_CLIENT_SECRET` | ✅   | Graph アプリ登録（Client ID は GUID、Secret は値）                   |
-| `GRAPH_MAILBOX`                                               | ✅   | 対象メールボックスの UPN                                             |
-| `FOUNDRY_ENDPOINT` / `FOUNDRY_DEPLOYMENT` / `FOUNDRY_API_KEY` | ✅   | 既存 Foundry の接続情報                                              |
-| `STATE_STORAGE_CONNECTION`                                    | ✅   | 状態保存先（ローカルは Azurite、本番はアプリのストレージ）           |
-| `CALENDAR_WRITE_MODE`                                         | -    | `dry-run`（既定）/ `create-only` / `full`                            |
-| `MAIL_POLLING_ENABLED`                                        | -    | Timer による自動監視（既定 `false`）                                 |
-| `PROCESS_EXISTING_MESSAGES`                                   | -    | 初回に既存メールを処理するか（既定 `false`）                         |
-| `DEFAULT_EVENT_DURATION_MINUTES`                              | -    | 終了時刻が不明な場合の所要時間（既定 60）                            |
-| `FOUNDRY_MAX_CALLS_PER_RUN`                                   | -    | 1 回の実行での推論呼び出し上限（アプリ既定 50、Bicep の本番既定 20） |
-| `STATE_TABLE_PREFIX`                                          | -    | テーブル名の接頭辞（同一ストレージ内の分離用）                       |
+| Variable                                                      | Required | Description                                                                   |
+| ------------------------------------------------------------- | -------- | ----------------------------------------------------------------------------- |
+| `GRAPH_TENANT_ID` / `GRAPH_CLIENT_ID` / `GRAPH_CLIENT_SECRET` | yes      | Graph app registration (Client ID is a GUID, Secret is the secret value)      |
+| `GRAPH_MAILBOX`                                               | yes      | UPN of the target mailbox                                                     |
+| `FOUNDRY_ENDPOINT` / `FOUNDRY_DEPLOYMENT` / `FOUNDRY_API_KEY` | yes      | Connection details of the existing Foundry resource                           |
+| `STATE_STORAGE_CONNECTION`                                    | yes      | State storage (Azurite locally, the app's storage account in production)      |
+| `CALENDAR_WRITE_MODE`                                         | -        | `dry-run` (default) / `create-only` / `full`                                  |
+| `MAIL_POLLING_ENABLED`                                        | -        | Automatic polling by the timer (default `false`)                              |
+| `PROCESS_EXISTING_MESSAGES`                                   | -        | Whether to process existing mail on the first run (default `false`)           |
+| `DEFAULT_EVENT_DURATION_MINUTES`                              | -        | Duration when the end time is unknown (default 60)                            |
+| `FOUNDRY_MAX_CALLS_PER_RUN`                                   | -        | Maximum inference calls per run (app default 50, Bicep production default 20) |
+| `STATE_TABLE_PREFIX`                                          | -        | Alphanumeric table-name prefix (to isolate state within one storage account)  |
 
-### 開発コマンド
+### Development commands
 
 ```bash
-pnpm start check        # Graph / Foundry の疎通確認（実メール本文は読まない）
-pnpm start scan         # 受信トレイの差分を処理（モードは CALENDAR_WRITE_MODE）
-pnpm start sample 8     # 既存メールを dry-run で解析
-pnpm start report       # dry-run で記録した計画を表示
-pnpm start:func         # ビルドしてローカルの Functions ホストを起動
-pnpm build              # tsc ビルド（dist/functions/*.js）
-pnpm test               # jest（Azurite を自動起動）
-pnpm test:e2e           # 合成メールで実 Foundry を呼ぶ E2E（Graph はスタブ、課金あり）
+pnpm start check        # Check Graph / Foundry connectivity (does not read real mail bodies)
+pnpm start scan         # Process the Inbox delta (mode follows CALENDAR_WRITE_MODE)
+pnpm start analyze <file>  # Analyze a local text file with Foundry and print the raw result
+pnpm start sample 8     # Analyze existing mail in dry-run (add --write to apply CALENDAR_WRITE_MODE)
+pnpm start report       # Show the plans recorded in dry-run
+pnpm start:func         # Build and start the local Functions host
+pnpm build              # tsc build (dist/functions/*.js)
+pnpm test               # jest (starts Azurite automatically)
+pnpm test:e2e           # E2E with synthetic mail against the real Foundry (Graph is stubbed, incurs cost; needs .env and Azurite)
 pnpm lint               # prettier / eslint / tsc
-pnpm fix                # prettier / eslint の自動修正
+pnpm fix                # prettier / eslint auto-fix
 ```
 
-## 一致する予約がない変更・取消メール
+## Update and cancel mails with no matching booking
 
-`CALENDAR_WRITE_MODE=full` のとき、変更（update）・取消（cancel）メールに一致する管理対象の予約がなければ、カレンダーには触れずに状態保存先の `PendingOps` テーブルへ保留として積む。保留は 14 日間、毎回のスキャンの最後に再評価され、予約が作られた時点で反映される。
+With `CALENDAR_WRITE_MODE=full`, an update or cancel mail that matches no managed booking does not touch the calendar; it is queued as a pending item in the `PendingOps` table of the state storage. Pending items are re-evaluated for 14 days at the end of every scan and applied once the booking is created.
 
-- 予約がより新しいメールで更新・作成済みなら、古い変更・取消は反映せず破棄する（`superseded`）
-- 反映すれば `done`、14 日を過ぎれば `expired`、保存内容の破損や Graph の項目固有エラーで 3 回失敗すれば `failed` として閉じる。閉じた項目も記録として残る
-- `dry-run` / `create-only` では積まない
+- If the booking was already updated or created by a newer mail, the older update/cancel is discarded without being applied (`superseded`)
+- An item is closed as `done` when applied, `expired` after 14 days, or `failed` after 3 failures caused by corrupted stored content or item-specific Graph errors. Closed items remain as a record
+- Nothing is queued in `dry-run` / `create-only`
 
-## ディレクトリ構成
+## Directory layout
 
 ```text
 src/
-  main.ts                # ローカル CLI（check / analyze / sample / report / scan）
-  config.ts              # 環境変数の検証
-  functions/timer.ts     # 5 分間隔の Timer Trigger（共通エンジンを呼ぶ薄い入口）
-  core/                  # 予約処理エンジン・検証・状態遷移
+  main.ts                # Local CLI (check / analyze / sample / report / scan)
+  config.ts              # Environment variable validation
+  functions/timer.ts     # 5-minute Timer Trigger (thin entry point calling the shared engine)
+  core/                  # Booking processing engine, validation, state transitions
   integrations/          # Graph / Foundry / Azure Tables
-test/                    # jest（Azurite は global-setup で自動起動）
-infra/                   # Bicep（main.bicep / main.bicepparam / README.md）
+test/                    # jest (Azurite is started automatically by global-setup)
+infra/                   # Bicep (main.bicep / main.bicepparam / README.md)
 ```
 
-## デプロイ
+## Deployment
 
-インフラ構築手順は [`infra/README.md`](./infra/README.md)、アプリのデプロイは [`.github/workflows/azure-functions-deploy.yml`](./.github/workflows/azure-functions-deploy.yml)（`main` / `master` への push）を参照。本番の初期モードは必ず `dry-run` とし、メインカレンダーへの書き込みは別途承認のうえで切り替える。
+See [`infra/README.md`](./infra/README.md) for provisioning the infrastructure and [`.github/workflows/azure-functions-deploy.yml`](./.github/workflows/azure-functions-deploy.yml) (push to `main` / `master`) for deploying the app. The initial production mode must be `dry-run`; switching to writing to the main calendar requires separate approval.
 
 ## License
 
