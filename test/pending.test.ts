@@ -115,8 +115,8 @@ const mail = (receivedAt: Date, start: string) => ({
   bodyText: day(start),
 })
 
-describe('update/cancel が先に届いた場合', () => {
-  it('取消は保留に積まれ、予約が作られた次の再評価で反映される', async () => {
+describe('when an update/cancel arrives first', () => {
+  it('a cancel is queued as pending and applied at the next re-evaluation after the booking is created', async () => {
     const { cfg, state, g, calls } = await setup()
     const n = number()
     const t = `${soon(5)}T10:00:00`
@@ -154,7 +154,7 @@ describe('update/cancel が先に届いた場合', () => {
     ])
   })
 
-  it('変更は保留に積まれ、予約が作られた次の再評価で反映される', async () => {
+  it('an update is queued as pending and applied at the next re-evaluation after the booking is created', async () => {
     const { cfg, state, g, calls } = await setup()
     const n = number()
     const t1 = `${soon(5)}T10:00:00`
@@ -176,7 +176,7 @@ describe('update/cancel が先に届いた場合', () => {
     ])
   })
 
-  it('一致する予約がない間は保留のまま変わらず、期限を過ぎると何も書かずに失効する', async () => {
+  it('stays pending while no booking matches, and expires without writing anything after the deadline', async () => {
     const { cfg, state, g, calls } = await setup()
     const n = number()
     const t = `${soon(5)}T10:00:00`
@@ -196,7 +196,7 @@ describe('update/cancel が先に届いた場合', () => {
     expect(calls).toEqual([])
   })
 
-  it('解決済みの項目は再実行しても何も書かず、同じメールを二度積んでも1件のまま', async () => {
+  it('a resolved item writes nothing on re-run, and queuing the same mail twice yields one item', async () => {
     const { cfg, state, g, calls } = await setup()
     const n = number()
     const t = `${soon(5)}T10:00:00`
@@ -211,7 +211,7 @@ describe('update/cancel が先に届いた場合', () => {
     expect(calls).toEqual(['create', 'delete'])
   })
 
-  it('予約がより新しいメールで作られていれば、古い取消は書き込まずに破棄する', async () => {
+  it('if the booking was created by a newer mail, the older cancel is discarded without writing', async () => {
     const { cfg, state, g, calls } = await setup()
     const n = number()
     const t = `${soon(5)}T10:00:00`
@@ -231,7 +231,7 @@ describe('update/cancel が先に届いた場合', () => {
     ])
   })
 
-  it('受信時刻を持たない旧形式の予約は新しいメール扱いにせず、取消を反映する', async () => {
+  it('a legacy booking without a received time is not treated as newer, and the cancel is applied', async () => {
     const { cfg, state, g, calls } = await setup()
     const n = number()
     const t = `${soon(5)}T10:00:00`
@@ -249,7 +249,7 @@ describe('update/cancel が先に届いた場合', () => {
   })
 })
 
-describe('反映に失敗した場合', () => {
+describe('when applying fails', () => {
   /** A booking plus a queued cancel for it, ready for reconcile. */
   async function queued(t: Awaited<ReturnType<typeof setup>>, n: string) {
     const start = `${soon(5)}T10:00:00`
@@ -269,7 +269,7 @@ describe('反映に失敗した場合', () => {
     )
   }
 
-  it('項目固有の Graph エラー(400)は試行として数え、3回目で failed にしてもスキャンは落とさない', async () => {
+  it('an item-specific Graph error (400) counts as an attempt; the third marks it failed without failing the scan', async () => {
     const t = await setup()
     await queued(t, number())
     t.fail.delete = new GraphError(400, 'Graph DELETE 400 ErrorInvalidRequest')
@@ -292,7 +292,7 @@ describe('反映に失敗した場合', () => {
     expect(t.calls).toEqual(['create'])
   })
 
-  it('障害に当たるエラー(503)は試行に数えず、その回の残りの項目に進まない', async () => {
+  it('an outage error (503) does not count as an attempt and stops processing the remaining items in that run', async () => {
     const t = await setup()
     const n = number()
     const start = `${soon(5)}T10:00:00`
@@ -330,7 +330,7 @@ describe('反映に失敗した場合', () => {
     expect(t.calls).toEqual(['create', 'delete'])
   })
 
-  it('読み戻せない保存内容は Graph を呼ばずに試行として数え、failed になる', async () => {
+  it('unreadable stored content counts as an attempt without calling Graph, and ends up failed', async () => {
     const t = await setup()
     await t.state.enqueuePending(
       pendingItem(number(), at(1000), { payload: '{}' })
@@ -353,7 +353,7 @@ describe('反映に失敗した場合', () => {
   })
 })
 
-describe('書き込みを行わない結果になる場合', () => {
+describe('when the outcome writes nothing', () => {
   const booking = (n: string, key: string) => ({
     key,
     number: n.toLowerCase(),
@@ -367,7 +367,7 @@ describe('書き込みを行わない結果になる場合', () => {
     status: 'active' as const,
   })
 
-  it('同じ番号の予約が複数ある場合は何もせず完了にする', async () => {
+  it('completes without writing when several bookings share the number', async () => {
     const { cfg, state, g, calls } = await setup()
     const n = number()
     await state.enqueuePending(pendingItem(n, at(1000)))
@@ -381,7 +381,7 @@ describe('書き込みを行わない結果になる場合', () => {
     expect(calls).toEqual([])
   })
 
-  it('手動編集で管理対象外になった予約は触らず完了にする', async () => {
+  it('completes without touching a booking no longer managed after a manual edit', async () => {
     const { cfg, state, g, calls } = await setup()
     const n = number()
     await state.putBooking({ ...booking(n, 'k1'), status: 'detached' })
@@ -398,7 +398,7 @@ describe('書き込みを行わない結果になる場合', () => {
     expect(calls).toEqual([])
   })
 
-  it('取消済みの予約への取消は何もせず完了にする', async () => {
+  it('completes without writing for a cancel of an already cancelled booking', async () => {
     const { cfg, state, g, calls } = await setup()
     const n = number()
     await state.putBooking({ ...booking(n, 'k1'), status: 'cancelled' })
@@ -411,7 +411,7 @@ describe('書き込みを行わない結果になる場合', () => {
     expect(calls).toEqual([])
   })
 
-  it('予定が手動編集されていれば削除せず、完了にする', async () => {
+  it('completes without deleting if the event was edited by hand', async () => {
     const { cfg, state, g, calls, userEdit } = await setup()
     const n = number()
     const t = `${soon(5)}T10:00:00`
@@ -427,9 +427,9 @@ describe('書き込みを行わない結果になる場合', () => {
   })
 })
 
-describe('保留に積まないモード', () => {
+describe('modes that do not queue pending items', () => {
   it.each(['dry-run', 'create-only'])(
-    '%s では一致しない取消を積まない',
+    '%s does not queue an unmatched cancel',
     async (mode) => {
       const { cfg, state, g, calls } = await setup()
       const t = `${soon(5)}T10:00:00`

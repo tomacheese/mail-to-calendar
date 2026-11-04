@@ -116,8 +116,8 @@ it('create → duplicate skip → update → user edit detaches → cancel is he
   userEdit()
   const held = await run(mk('update', t1), t1)
   expect(held[0]?.op).toBe('hold')
-  expect(calls).toHaveLength(2) // 手動編集された予定は更新しない
-  expect((await run(mk('cancel', t1), t1))[0]?.op).toBe('skip') // 管理対象外になった予約は触らない
+  expect(calls).toHaveLength(2) // an event edited by hand is not updated
+  expect((await run(mk('cancel', t1), t1))[0]?.op).toBe('skip') // a booking no longer managed is left alone
 })
 
 it('unknown cancel/update is held; dry-run and create-only never write existing', async () => {
@@ -193,7 +193,7 @@ it('cancel without a date matches by reservation number; without a number it is 
         noDate(n)
       )
     )[0]?.op
-  ).toBe('hold') // 予約番号は本文に実在する必要がある
+  ).toBe('hold') // the reservation number must actually appear in the body
   expect(
     (await processMail(cfg('full'), g, state, body, noDate(n)))[0]?.op
   ).toBe('cancel')
@@ -202,10 +202,10 @@ it('cancel without a date matches by reservation number; without a number it is 
     (
       await processMail(cfg('full'), g, state, mail(t), mk('confirmed', t, n))
     )[0]?.op
-  ).toBe('hold') // 取消済みは復活させない
+  ).toBe('hold') // a cancelled booking is not revived
 })
 
-it('更新の後でも、手を加えていない予定は取消で削除できる', async () => {
+it('an untouched event can still be deleted by a cancel after an update', async () => {
   const state = new State(cfg('full'))
   await state.init()
   const { g, calls } = stub()
@@ -225,7 +225,7 @@ it('更新の後でも、手を加えていない予定は取消で削除でき�
   expect(calls).toEqual(['create', 'patch', 'delete'])
 })
 
-it('場所の無い更新メールの後でも、手を加えていない予定は取消で削除できる', async () => {
+it('an untouched event can still be deleted by a cancel after an update mail without a location', async () => {
   const state = new State(cfg('full'))
   await state.init()
   const { g } = stub()
@@ -246,8 +246,8 @@ it('場所の無い更新メールの後でも、手を加えていない予定�
   expect(result[0]).toMatchObject({ op: 'cancel', applied: true })
 })
 
-describe('状態遷移の補強', () => {
-  it('取消済みの予約に再度取消が来ても、状態を変えず削除も繰り返さない', async () => {
+describe('state transition hardening', () => {
+  it('a repeated cancel for an already cancelled booking changes no state and does not delete again', async () => {
     const state = new State(cfg('full'))
     await state.init()
     const { g, calls } = stub()
@@ -268,7 +268,7 @@ describe('状態遷移の補強', () => {
     expect(row?.status).toBe('cancelled')
   })
 
-  it('update は仮予約を確定に昇格させない', async () => {
+  it('update does not promote a tentative booking to confirmed', async () => {
     const state = new State(cfg('full'))
     await state.init()
     const { g } = stub()
@@ -281,7 +281,7 @@ describe('状態遷移の補強', () => {
     expect(row?.tentative).toBe(true)
   })
 
-  it('空白だけの予約番号は番号なしとして扱い、既存の予約に一致させない', async () => {
+  it('a whitespace-only reservation number is treated as none and matches no existing booking', async () => {
     const state = new State(cfg('full'))
     await state.init()
     const { g, calls } = stub()
@@ -305,7 +305,7 @@ describe('状態遷移の補強', () => {
   })
 })
 
-describe('施設ごとの予約の同一性', () => {
+describe('booking identity per provider', () => {
   const providerB = '別の医院'
   const differentProviderNote =
     'reservation number belongs to a different provider (not touching calendar)'
@@ -313,7 +313,7 @@ describe('施設ごとの予約の同一性', () => {
   const newNumber = () => `n-${randomUUID().slice(0, 8)}`
   const full = cfg('full')
 
-  it('別の施設から同じ予約番号の新規予約が届いても、既存の予定を上書きせず別の予約として作成する', async () => {
+  it('a new booking with the same reservation number from another provider is created separately without overwriting the existing event', async () => {
     const state = new State(full)
     await state.init()
     const { g, calls } = stub()
@@ -347,7 +347,7 @@ describe('施設ごとの予約の同一性', () => {
     })
   })
 
-  it('別の施設から同じ予約番号の変更が届いても、既存の予定は更新せず保留する', async () => {
+  it('an update with the same reservation number from another provider is held without updating the existing event', async () => {
     const state = new State(full)
     await state.init()
     const { g, calls } = stub()
@@ -374,7 +374,7 @@ describe('施設ごとの予約の同一性', () => {
     expect(await state.findByNumber(n)).toEqual([before])
   })
 
-  it('別の施設から同じ予約番号の取消が届いても、既存の予定は削除せず保留する', async () => {
+  it('a cancel with the same reservation number from another provider is held without deleting the existing event', async () => {
     const state = new State(full)
     await state.init()
     const { g, calls } = stub()
@@ -400,7 +400,7 @@ describe('施設ごとの予約の同一性', () => {
     expect(row?.status).toBe('active')
   })
 
-  it('日付のない取消でも、別の施設の予約番号では既存の予定を削除せず保留する', async () => {
+  it('a cancel without a date is held, not deleting the existing event, when the reservation number belongs to another provider', async () => {
     const state = new State(full)
     await state.init()
     const { g, calls } = stub()
@@ -429,7 +429,7 @@ describe('施設ごとの予約の同一性', () => {
     expect(row?.status).toBe('active')
   })
 
-  it('同じ予約番号の予約が複数の施設にあっても、変更と取消は一致した施設の予定だけに作用する', async () => {
+  it('when several providers share a reservation number, updates and cancels affect only the event of the matching provider', async () => {
     const state = new State(full)
     await state.init()
     const { g, events } = stub()
@@ -479,7 +479,7 @@ describe('施設ごとの予約の同一性', () => {
     expect(afterB).toEqual(rowB)
   })
 
-  it('同じ施設の表記ゆれ（全角・空白・大文字小文字）は同じ予約として更新する', async () => {
+  it('notation variants of the same provider (full-width, whitespace, case) are updated as the same booking', async () => {
     const state = new State(full)
     await state.init()
     const { g, calls } = stub()
@@ -507,7 +507,7 @@ describe('施設ごとの予約の同一性', () => {
     expect(await state.findByNumber(n)).toHaveLength(1)
   })
 
-  it('同じ施設・同じ予約番号の行が複数あるときは、何も書き込まず保留する', async () => {
+  it('when several rows share the same provider and reservation number, nothing is written and the item is held', async () => {
     const state = new State(full)
     await state.init()
     const { g, calls } = stub()
@@ -544,7 +544,7 @@ describe('施設ごとの予約の同一性', () => {
     expect(calls).toEqual([])
   })
 
-  it('どの施設にも該当する予約がない変更と取消は、従来どおりの理由で保留する', async () => {
+  it('an update or cancel matching no booking of any provider is held for the usual reason', async () => {
     const state = new State(full)
     await state.init()
     const { g, calls } = stub()
