@@ -66,5 +66,5 @@
     "@azure/functions": "4.17.1",
     "zod": "4.6.7"
   },
-  "packageManager": "pnpm@12.18.0"
+  "packageManager": "pnpm@12.20.0"
 }
