@@ -10,7 +10,7 @@
     "@book000/eslint-config": "1.16.125",
     "@types/jest": "30.0.0",
     "@types/node": "26.6.6",
-    "azure-functions-core-tools": "4.16.0",
+    "azure-functions-core-tools": "4.16.1",
     "azurite": "3.37.0",
     "eslint": "10.14.0",
     "jest": "30.5.2",

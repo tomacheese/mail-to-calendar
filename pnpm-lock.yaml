@@ -195,8 +195,8 @@ importers:
         specifier: 26.6.6
         version: 26.6.6
       azure-functions-core-tools:
-        specifier: 4.16.0
-        version: 4.16.0(supports-color@8.1.1)
+        specifier: 4.16.1
+        version: 4.16.1(supports-color@8.1.1)
       azurite:
         specifier: 3.37.0
         version: 3.37.0(@types/node@26.6.6)(debug@4.4.3(supports-color@8.1.1))(supports-color@8.1.1)
@@ -1693,8 +1693,8 @@ packages:
   axios@1.21.0:
     resolution: {integrity: sha512-YCzXMB53Q9PZBsh7yN7wtapit4WepwcHS2fP8QhGsBxSz5YtgYobV7GGlWlAJi+RxfU77GQTQi2DSLUma42EYA==}
 
-  azure-functions-core-tools@4.16.0:
-    resolution: {integrity: sha512-JxSpCJ7TgjiTdyP3PrrhnI1WkoZKHYgToltyUJKqYWe4yLTuIyqi8Hl9xvg8AAyem6Vg4RSx6+RJr1QKk9SS6g==}
+  azure-functions-core-tools@4.16.1:
+    resolution: {integrity: sha512-G0wZ8YO0Wq1KFO2kS82olPCmgy8/ylbfIKVwVhJSzpDXAFTtf1kQD3QciM9Jf/xYQUrtaGM5DZYc9X7cskviXw==}
     engines: {node: '>=22'}
     os: [win32, darwin, linux]
     hasBin: true
@@ -5644,7 +5644,7 @@ snapshots:
       - debug
       - supports-color
 
-  azure-functions-core-tools@4.16.0(supports-color@8.1.1):
+  azure-functions-core-tools@4.16.1(supports-color@8.1.1):
     dependencies:
       chalk: 6.0.1
       extract-zip: 2.0.1(supports-color@8.1.1)
